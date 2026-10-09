@@ -1,0 +1,7 @@
+{
+  "name": "anthill",
+  "owner": { "name": "lucas-elytron" },
+  "plugins": [
+    { "name": "anthill", "source": "./", "description": "An ASCII ant colony crawls your file tree: one ant per agent" }
+  ]
+}
