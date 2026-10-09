@@ -130,3 +130,127 @@ export const trailIndex = (at: number): number | undefined =>
 /** First column of a glyph `width` cells wide standing on trail point `p`. */
 export const glyphStart = (p: TrailPoint, width: number): number =>
   Math.max(0, p.align === 'left' ? p.col : p.col - Math.floor(width / 2))
+
+// ---- horizontal mound: a shorter, wider redraw for a short-and-wide pane -----------
+//
+// Same picture, laid on its side: the hole and its one-at-a-time squeeze sit near the
+// left, the shaded body widens rightward, and the trail ends beside the trunk at the
+// right instead of below it, so ants crawl left-to-right instead of top-to-bottom. Kept
+// to the same TRAIL_STEPS/SUMMIT/PEEKS.length/ORBIT_SEATS as the vertical mound (see
+// MOUND is a small block / mound.ts tests), so ants.ts's gating logic needs no changes
+// at all for this orientation — only its geometry (line/col) differs.
+
+export const H_MOUND: string[] = [
+  '  . *  * .',
+  '▗▒▒▒▒▄▄▒▒▒▒▒▒▖',
+  '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙',
+  '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙',
+  ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+]
+
+export const H_MOUND_MASK: string[] = [
+  '  w k  k w',
+  'sooooHHdddddos',
+  'sddddHHooooollllllllds',
+  'sddddooooooollllllllds',
+  'gTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+]
+
+export const H_SPARKLE_LINE = 0
+
+/** The ants' path from the well to beside the trunk, left to right, same shape as TRAIL. */
+export const H_TRAIL: TrailPoint[] = [
+  { line: 2, col: 6 }, // down in the well
+  { line: 1, col: 6 }, // the hole's mouth
+  { line: 1, col: 9 }, // over the rim
+  { line: 1, col: 12 }, // the shoulder
+  { line: 2, col: 12 }, // down onto the shaded body
+  { line: 3, col: 12 },
+  { line: 4, col: 16 }, // the baseline
+  { line: 4, col: 21 },
+  { line: 4, col: 26, align: 'left' }, // beside the trunk, right of tree row 0
+]
+
+export const H_TRAIL_STEPS = H_TRAIL.length
+
+/** Same squeeze rule as SUMMIT, over the well/mouth/rim/shoulder instead. */
+export const H_SUMMIT = SUMMIT
+
+export const H_HOME = -(H_TRAIL_STEPS + 1)
+
+export const H_HOLE = { line: 1, start: 5, end: 6 }
+
+export const H_PEEKS: { line: number; col: number }[] = [
+  { line: 1, col: 5 },
+  { line: 1, col: 6 },
+  { line: 2, col: 5 },
+]
+
+/** Clear of H_TRAIL/H_PEEKS/H_HOLE/the sparkle line, on the shaded body's two middle lines. */
+export const H_ORBIT: { line: number; col: number }[] = [
+  { line: 2, col: 14 },
+  { line: 2, col: 15 },
+  { line: 2, col: 16 },
+  { line: 2, col: 17 },
+  { line: 2, col: 18 },
+  { line: 2, col: 19 },
+  { line: 3, col: 19 },
+  { line: 3, col: 18 },
+  { line: 3, col: 17 },
+  { line: 3, col: 16 },
+  { line: 3, col: 15 },
+  { line: 3, col: 14 },
+]
+
+export const H_ORBIT_SEATS = ORBIT_SEATS
+
+/** Which mound a pane draws: the usual tall one, or the short, wide one. */
+export type Orientation = 'vertical' | 'horizontal'
+
+/** Everything render.ts needs to draw one mound, gathered so it doesn't branch on orientation itself. */
+export type MoundShape = {
+  mound: string[]
+  mask: string[]
+  sparkleLine: number
+  trail: TrailPoint[]
+  trailSteps: number
+  summit: number
+  home: number
+  hole: { line: number; start: number; end: number }
+  peeks: { line: number; col: number }[]
+  orbit: { line: number; col: number }[]
+  orbitSeats: number
+}
+
+export const SHAPES: Record<Orientation, MoundShape> = {
+  vertical: {
+    mound: MOUND,
+    mask: MOUND_MASK,
+    sparkleLine: SPARKLE_LINE,
+    trail: TRAIL,
+    trailSteps: TRAIL_STEPS,
+    summit: SUMMIT,
+    home: HOME,
+    hole: HOLE,
+    peeks: PEEKS,
+    orbit: ORBIT,
+    orbitSeats: ORBIT_SEATS,
+  },
+  horizontal: {
+    mound: H_MOUND,
+    mask: H_MOUND_MASK,
+    sparkleLine: H_SPARKLE_LINE,
+    trail: H_TRAIL,
+    trailSteps: H_TRAIL_STEPS,
+    summit: H_SUMMIT,
+    home: H_HOME,
+    hole: H_HOLE,
+    peeks: H_PEEKS,
+    orbit: H_ORBIT,
+    orbitSeats: H_ORBIT_SEATS,
+  },
+}
+
+/** trailIndex(at), generalized to either shape. */
+export const trailIndexFor = (shape: MoundShape, at: number): number | undefined =>
+  at > shape.home && at < 0 ? at + shape.trailSteps : undefined

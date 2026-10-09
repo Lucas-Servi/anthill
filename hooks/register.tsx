@@ -17,7 +17,7 @@ import {
   shiftForInsert,
   step,
 } from './ants'
-import { compose } from './render'
+import { compose, orientationFor } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -259,11 +259,18 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const readAnts = await read($, antsAtom)
     const main = readAnts.find(a => a.id === MAIN)
+    const width = Math.max(10, e.props.bodyColumns || 40)
+    // orientationFor needs the pane's real reported height, not the floor below —
+    // that floor would otherwise always keep a short pane in vertical mode.
+    const rawRows = e.props.scroll.bodyRows || 30
+    const orientation = orientationFor(width, rawRows)
+    const height = Math.max(orientation === 'horizontal' ? 5 : 8, rawRows)
     const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
-      width: Math.max(10, e.props.bodyColumns || 40),
-      height: Math.max(8, e.props.scroll.bodyRows || 30),
+      width,
+      height,
       tick: await read($, tickAtom),
       mainRow: main && main.at >= 0 ? main.at : undefined,
+      orientation,
     })
 
     return (

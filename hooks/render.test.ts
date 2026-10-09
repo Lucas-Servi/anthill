@@ -1,16 +1,22 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { MOUND, PEEK, antGlyph, workFx, compose, lineText, type Line } from './render'
+import { MOUND, PEEK, antGlyph, workFx, compose, orientationFor, lineText, type Line } from './render'
 import {
   HOLE,
   HOME,
+  H_MOUND,
+  H_MOUND_MASK,
+  H_SUMMIT,
+  H_TRAIL,
+  H_TRAIL_STEPS,
   MOUND_MASK,
   MOUND_PALETTE,
   ORBIT,
   ORBIT_SEATS,
   PEEKS,
   SPARKLE_LINE,
+  SUMMIT,
   TRAIL,
   TRAIL_STEPS,
   TREE_INDENT,
@@ -141,6 +147,30 @@ test('MOUND_MASK covers every mound cell with a known color', () => {
       if (ch !== ' ') expect(MOUND_PALETTE[keys[c]!] !== undefined).toBe(true)
     })
   })
+})
+
+test('H_MOUND is a short, wide block', () => {
+  expect(H_MOUND.length <= 5).toBe(true)
+  for (const l of H_MOUND) expect(Array.from(l).length <= 40).toBe(true)
+})
+
+test('H_MOUND_MASK covers every H_MOUND cell with a known color', () => {
+  expect(H_MOUND_MASK.length).toBe(H_MOUND.length)
+  H_MOUND.forEach((line, i) => {
+    const chars = Array.from(line)
+    const keys = Array.from(H_MOUND_MASK[i]!)
+    expect(keys.length).toBe(chars.length)
+    chars.forEach((ch, c) => {
+      expect(keys[c] === ' ').toBe(ch === ' ')
+      if (ch !== ' ') expect(MOUND_PALETTE[keys[c]!] !== undefined).toBe(true)
+    })
+  })
+})
+
+test('the horizontal trail keeps the same shape as the vertical one, so ants.ts needs no changes', () => {
+  expect(H_TRAIL_STEPS).toBe(TRAIL_STEPS)
+  expect(H_TRAIL.length).toBe(TRAIL.length)
+  expect(H_SUMMIT).toBe(SUMMIT)
 })
 
 test('the side door is gone; the hole is a dark pit in the summit', () => {
@@ -617,4 +647,55 @@ test('compose falls back to the lowest busy ant when mainRow is undefined (main 
   const ants: Ant[] = [ant({ id: 'sub', at: 45, task: 'working' })]
   const lines = compose(tall, ants, [], { width: 30, height: 15, tick: 0 })
   expect(lines.some(l => lineText(l).includes('f45.ts'))).toBe(true)
+})
+
+test('a default orientation (none given) renders byte-identical to orientation: "vertical"', () => {
+  const rows: Row[] = [row({ name: 'a.ts', path: 'a.ts' })]
+  const ants: Ant[] = [ant({ id: 'a1', at: 0, task: 'working' })]
+  const withDefault = compose(rows, ants, [], { width: 40, height: 20, tick: 3 })
+  const withExplicit = compose(rows, ants, [], { width: 40, height: 20, tick: 3, orientation: 'vertical' })
+  expect(withDefault).toEqual(withExplicit)
+})
+
+test('orientationFor switches to horizontal only when short and wide enough', () => {
+  expect(orientationFor(60, 5)).toBe('horizontal')
+  expect(orientationFor(60, 6)).toBe('horizontal')
+  expect(orientationFor(60, 7)).toBe('vertical')
+  expect(orientationFor(20, 5)).toBe('vertical') // short, but too narrow for mound + tree side by side
+})
+
+test('compose in horizontal mode respects width and height', () => {
+  const rows: Row[] = Array.from({ length: 10 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
+  const ants: Ant[] = [ant({ id: 'a1', at: 2, task: 'working' })]
+  const lines = compose(rows, ants, [], { width: 80, height: 5, tick: 0, orientation: 'horizontal' })
+  expect(lines.length <= 5).toBe(true)
+  for (const l of lines) expect(Array.from(lineText(l)).length <= 80).toBe(true)
+})
+
+test('horizontal mode puts the mound and the tree on the same lines, not stacked', () => {
+  const lines = compose(TREE, [], [], { width: 80, height: 5, tick: 0, orientation: 'horizontal' })
+  const idx = lines.findIndex(l => lineText(l).includes('src/'))
+  expect(idx).toBeGreaterThanOrEqual(0)
+  expect(idx).toBeLessThan(H_MOUND.length) // same block of lines as the mound, not stacked below it
+  expect(lineText(lines[idx]!).indexOf('src/')).toBeGreaterThan(10) // preceded by the mound + gap, not flush left
+})
+
+test('a walking ant on the horizontal trail paints further right as it moves from the well toward the baseline', () => {
+  const glyph = antGlyph('sonnet', 'walking', 0)
+  const wellAnt = ant({ id: 'a1', at: 0 - H_TRAIL_STEPS, task: 'walking', color: '#abcdef' }) // trail point 0
+  const baselineAnt = ant({ id: 'a1', at: 6 - H_TRAIL_STEPS, task: 'walking', color: '#abcdef' }) // trail point 6
+  const wellLines = compose([], [wellAnt], [], { width: 60, height: 5, tick: 0, orientation: 'horizontal' })
+  const baselineLines = compose([], [baselineAnt], [], { width: 60, height: 5, tick: 0, orientation: 'horizontal' })
+  const wellCol = lineText(wellLines[H_TRAIL[0]!.line]!).indexOf(glyph)
+  const baseCol = lineText(baselineLines[H_TRAIL[6]!.line]!).indexOf(glyph)
+  expect(wellCol).toBeGreaterThanOrEqual(0)
+  expect(baseCol).toBeGreaterThan(wellCol)
+})
+
+test('the tree still scrolls vertically beside the mound in horizontal mode, anchored on mainRow', () => {
+  const tall: Row[] = Array.from({ length: 30 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
+  const ants: Ant[] = [ant({ id: 'main', at: 20, task: 'working' })]
+  const lines = compose(tall, ants, [], { width: 80, height: 5, tick: 0, orientation: 'horizontal', mainRow: 20 })
+  expect(lines.some(l => lineText(l).includes('f20.ts'))).toBe(true)
+  expect(lines.some(l => lineText(l).includes('f0.ts'))).toBe(false)
 })
