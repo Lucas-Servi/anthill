@@ -55,6 +55,14 @@ export type Ant = {
   peek?: number
   /** Which of the mound's orbit seats (mound.ts ORBIT) its dot holds while `task` is `'busy'`. */
   busySeat?: number
+  /**
+   * While walking/returning between tree rows of different `depth`: how deep (in
+   * ancestor-depth units) its glyph is currently drawn, easing by at most one level a
+   * tick toward the row it is actually at. Absent once it catches up (the common
+   * case) or while off the tree — purely a rendering offset, never read by step()'s
+   * own at/task logic.
+   */
+  climbDepth?: number
   /** Remove the ant once it is back home (its subagent finished). */
   leaving?: boolean
 }

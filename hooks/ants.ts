@@ -103,6 +103,26 @@ export function seatOrbits(ants: Ant[]): Ant[] {
   })
 }
 
+/** Clears `climbDepth` outright: the ant is standing on its row, not transiting. */
+function clearClimb(ant: Ant): Ant {
+  if (ant.climbDepth === undefined) return ant
+  const { climbDepth, ...rest } = ant
+  return rest
+}
+
+/**
+ * Shows a walking ant climbing down the branch for the one tick it steps into a more
+ * deeply nested row: its glyph is drawn at the shallower depth it came from (an
+ * ancestor's trunk column) instead of its new row's own column, landing there the very
+ * next tick (no added delay — `at` has already moved; this only lags the drawing by
+ * one frame). Only meaningful going deeper: a sideways or shallower move has no
+ * further-out ancestor column to lag at, so it clears instead. Purely a rendering
+ * side-channel for render.ts — never consulted by `at`/`task` logic.
+ */
+function climbInto(ant: Ant, fromDepth: number, toDepth: number): Ant {
+  return fromDepth < toDepth ? { ...ant, climbDepth: fromDepth } : clearClimb(ant)
+}
+
 /** Pulls the next queued job into `job`, or heads the ant home. */
 function advanceToNext(ant: Ant): Ant {
   const [next, ...rest] = ant.queue
@@ -246,14 +266,18 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
         } else {
           ant = { ...ant, task: 'working', frame: 0 }
         }
+        // arrived: standing on the row now, not transiting between depths
+        ant = clearClimb(ant)
       } else if (ant.at === HOME && !canLeave) {
         // wait in the hole until the way is clear
       } else if (turnsBack(ants, ant.at)) {
         ant = { ...ant, at: ant.at - 1 }
       } else {
         if (ant.at === HOME) canLeave = false
+        const fromDepth = ant.at >= 0 ? nextRows[ant.at]!.depth : undefined
         const dir = target > ant.at ? 1 : -1
         ant = { ...ant, at: ant.at + dir }
+        ant = ant.at >= 0 && fromDepth !== undefined ? climbInto(ant, fromDepth, nextRows[ant.at]!.depth) : clearClimb(ant)
       }
       keep(ant)
       continue
@@ -300,6 +324,8 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
     }
     const at = Math.max(HOME, ant.at - 1)
     ant = at === HOME ? { ...ant, at, task: 'home' } : { ...ant, at }
+    // heading up/out: no further-out ancestor column to lag at, so no climb visual here
+    ant = clearClimb(ant)
     keep(ant)
   }
 

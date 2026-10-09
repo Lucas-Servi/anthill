@@ -49,6 +49,11 @@ const publish = async ($: EngineInterface) => {
   await update($, antsAtom, () => ants)
   await update($, tickAtom, () => tick)
   await update($, foldsAtom, () => folds)
+  // Writing state alone isn't a reliable enough redraw signal in practice (confirmed
+  // live: a running /compact and a working background subagent both sat frozen) —
+  // force the mounted pane to repaint instead of trusting the implicit, throttled
+  // redraw-on-read-subscription path.
+  $.ui.invalidate('ui.render')
 }
 
 const antFor = (id: string, label = 'agent', model?: string): Ant => {
@@ -149,6 +154,7 @@ export const register: Register = on => {
         if (idleTicks % IDLE_WIGGLE_EVERY === 0 && ants.some(a => a.task === 'home')) {
           ants = ants.map(a => (a.task === 'home' ? { ...a, frame: a.frame + 1 } : a))
           void update($, antsAtom, () => ants)
+          $.ui.invalidate('ui.render')
         }
         return
       }
@@ -175,7 +181,10 @@ export const register: Register = on => {
     const started = await next(e)
     if (started.agentId) {
       const ant = antFor(started.agentId, e.subagentType || 'agent', started.model)
-      setAnt({ ...ant, label: e.subagentType || ant.label, breed: breedOf(started.model) })
+      // Busy from frame one: a background subagent may run for minutes before its
+      // first tool.call/turn.step lands, and markBusy is a no-op on anything already
+      // past 'home', so this is harmless if it's ever already further along.
+      setAnt(markBusy({ ...ant, label: e.subagentType || ant.label, breed: breedOf(started.model) }))
     }
     await publish($)
     return started
@@ -248,10 +257,13 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const lines = compose(await read($, rowsAtom), await read($, antsAtom), await read($, foldsAtom), {
+    const readAnts = await read($, antsAtom)
+    const main = readAnts.find(a => a.id === MAIN)
+    const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
       width: Math.max(10, e.props.bodyColumns || 40),
       height: Math.max(8, e.props.scroll.bodyRows || 30),
       tick: await read($, tickAtom),
+      mainRow: main && main.at >= 0 ? main.at : undefined,
     })
 
     return (

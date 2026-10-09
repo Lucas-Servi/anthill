@@ -94,6 +94,8 @@ const session = async (
     ants?: { id: string; at: number; task: string }[]
     folds?: { id: string; before: number; after?: number; settle?: number }[]
   }[] = [],
+  /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job. */
+  toolCall: () => unknown = () => ({ result: 'ok' }),
 ) => {
   const clock = mock.clock(on)
   const latest = {
@@ -128,7 +130,7 @@ const session = async (
   on('fs.exists', ($, e) => ({ value: !missing.includes(e.path) }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: undefined }) as never)
-  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('tool.call', () => toolCall() as never)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
   const pane = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'Pane', requestId: 'anthill', props: PANE_PROPS as never })
   /** Whether the clock has stopped: no tick published over `ms`. */
@@ -252,6 +254,35 @@ test('agent.spawn marks the spawning ant busy', async ($, on) => {
   // the call's own loop (main, with no parentAgentId context from a flat test call) is busy
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
   expect(latest.ants.find(a => a.id === 'sub1')).toBeDefined()
+  // the newly spawned ant is busy from frame one, not idle at home waiting for its
+  // first tool.call/turn.step — it may run in the background for minutes before either
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy')
+})
+
+test('mainRow keeps the main ant\'s row visible over a farther, still-walking subagent, when both can\'t fit', async ($, on) => {
+  const f = (name: string) => ({ name, kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false })
+  const names = Array.from({ length: 60 }, (_, i) => `f${String(i).padStart(2, '0')}.ts`)
+  const dirs = { [CWD]: names.map(f) }
+  // next(e) never resolves: finish() (in the hook's finally) never runs, so once an ant
+  // arrives it parks in 'working' for good — a stable snapshot with both ants on the
+  // tree at once, far apart, instead of chasing their exact race-y hole-gate timing.
+  const { clock, latest, pane } = await session($, on, dirs as never, [], [], () => new Promise(() => {}))
+
+  void $.tool.call({ tool: 'Read', file_path: `${CWD}/f02.ts`, tool_use_id: 'r1' } as never)
+  void $.tool.call({ tool: 'Read', file_path: `${CWD}/f55.ts`, tool_use_id: 'r2', agentId: 'sub1' } as never)
+  await clock.advance(120 * 90) // generous: both well past arrival, both parked indefinitely
+
+  const main = latest.ants.find(a => a.id === 'main')!
+  const sub = latest.ants.find(a => a.id === 'sub1')!
+  expect(main.at).toBe(2)
+  expect(sub.at).toBe(55)
+  expect(main.task).toBe('working')
+  expect(sub.task).toBe('working')
+
+  // main's row stays visible even though the subagent, far below, would have been the
+  // "lowest" (and so, under the old behavior, the one scrolled to) instead
+  expect(await pane.find({ text: 'f02.ts' })).toBeDefined()
+  expect(await pane.find({ text: 'f55.ts' })).toBeUndefined()
 })
 
 test('session.compact shows a fold for the compacting id, animates while next(e) is pending, then clears a few ticks after it resolves', async ($, on) => {

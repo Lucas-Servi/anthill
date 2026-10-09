@@ -140,18 +140,30 @@ function computeIsLast(rows: Row[]): boolean[] {
   })
 }
 
-export function branchPrefixes(rows: Row[]): string[] {
+/**
+ * branchPrefixes(rows)[i], but as the per-ancestor-depth strings it's built from
+ * instead of joined: steps[d] for d < row.depth is that ancestor's own `'    '`/`'│   '`
+ * segment, and the last element is the row's own connector. Lets a climbing ant's
+ * glyph be placed over a shallower ancestor's trunk column (render.ts) without
+ * re-deriving the indent stack a second time.
+ */
+export function branchPrefixSteps(rows: Row[]): string[][] {
   const isLast = computeIsLast(rows)
   const stack: boolean[] = []
   return rows.map((row, i) => {
     stack[row.depth] = isLast[i]!
     stack.length = row.depth + 1
-    let prefix = ''
+    const steps: string[] = []
     for (let d = 0; d < row.depth; d++) {
-      prefix += stack[d] ?? false ? '    ' : '│   '
+      steps.push(stack[d] ?? false ? '    ' : '│   ')
     }
-    return prefix + connector(isLast[i]!, row.built)
+    steps.push(connector(isLast[i]!, row.built))
+    return steps
   })
+}
+
+export function branchPrefixes(rows: Row[]): string[] {
+  return branchPrefixSteps(rows).map((steps) => steps.join(''))
 }
 
 export function relativize(cwd: string, filePath: string): string | null {

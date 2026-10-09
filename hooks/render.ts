@@ -12,7 +12,7 @@ import {
   trailIndex,
 } from './mound'
 import { inHole, orbitCell, seatPeeks } from './ants'
-import { branchPrefixes, isBuilt } from './tree'
+import { branchPrefixSteps, isBuilt } from './tree'
 
 /** A run of text in one style. `bg` is a background color (the hole's, under anything drawn on it). */
 export type Seg = { text: string; color?: string; bg?: string; dim?: boolean; bold?: boolean }
@@ -138,7 +138,7 @@ export const workFx = (task: Task, frame: number): string => {
 
 // ---- composition -----------------------------------------------------------
 
-type Opts = { width: number; height: number; tick: number }
+type Opts = { width: number; height: number; tick: number; mainRow?: number }
 
 const clip = (s: string, width: number): string => Array.from(s).slice(0, Math.max(0, width)).join('')
 
@@ -265,6 +265,37 @@ const freeStart = (spans: Span[], want: number, width: number): number => {
   return x
 }
 
+/**
+ * A tree row's indent/branch text with one or more climbing ants' glyphs painted over
+ * their ancestor trunk column, instead of appended after the row's own prefix — the
+ * same "last write wins" overlay `paint()` uses on the mound, here on plain text since
+ * a tree row has no background to preserve.
+ */
+const overlayLine = (base: string, overlays: { col: number; glyph: string; color: string }[]): Line => {
+  const chars: { ch: string; color?: string }[] = Array.from(base).map(ch => ({ ch }))
+  for (const o of overlays) {
+    Array.from(o.glyph).forEach((ch, j) => {
+      const idx = o.col + j
+      while (chars.length <= idx) chars.push({ ch: ' ' })
+      chars[idx] = { ch, color: o.color }
+    })
+  }
+  const line: Line = []
+  for (const c of chars) {
+    const last = line.at(-1)
+    const dim = c.color === undefined
+    if (last && last.color === c.color && !!last.dim === dim) {
+      last.text += c.ch
+      continue
+    }
+    const seg: Seg = { text: c.ch }
+    if (c.color) seg.color = c.color
+    else seg.dim = true
+    line.push(seg)
+  }
+  return line
+}
+
 /** How many ticks between fold stages shrinking by one branch. */
 const FOLD_STAGE_TICKS = 3
 
@@ -321,7 +352,7 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   }
 
   // -- tree rows --
-  const prefixes = branchPrefixes(rows)
+  const prefixSteps = branchPrefixSteps(rows)
   const byRow = new Map<number, Ant[]>()
   for (const a of ants) {
     if (inHole(a) || a.at < 0) continue
@@ -331,13 +362,24 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   }
 
   const treeLines: Line[] = rows.map((row, i) => {
-    const prefix = prefixes[i] ?? ''
+    const steps = prefixSteps[i] ?? []
     const here = byRow.get(i) ?? []
     const gutterAnts = here.filter(a => a.task === 'walking' || a.task === 'returning')
     const standingAnts = here.filter(a => a.task === 'working' || a.task === 'building')
 
-    const line: Line = [{ text: indent + prefix, dim: true }]
-    for (const a of gutterAnts) line.push({ text: antGlyph(a.breed, a.task, a.frame) + ' ', color: a.color })
+    // A gutter ant still easing toward this row's depth is drawn climbing down the
+    // shallower ancestor's trunk column instead of after the row's own full prefix.
+    const climbing = gutterAnts.filter(a => a.climbDepth !== undefined && a.climbDepth < row.depth)
+    const walking = gutterAnts.filter(a => !climbing.includes(a))
+    const baseText = indent + steps.join('')
+    const overlays = climbing.map(a => ({
+      col: indent.length + steps.slice(0, a.climbDepth!).join('').length,
+      glyph: antGlyph(a.breed, a.task, a.frame),
+      color: a.color,
+    }))
+
+    const line: Line = overlays.length > 0 ? overlayLine(baseText, overlays) : [{ text: baseText, dim: true }]
+    for (const a of walking) line.push({ text: antGlyph(a.breed, a.task, a.frame) + ' ', color: a.color })
 
     if (isBuilt(row)) {
       const highlighted = standingAnts[0]
@@ -363,12 +405,15 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const room = Math.max(0, height - reserved)
 
   if (treeLines.length > room) {
-    // keep the lowest ant on the tree visible (the mound and its trail always show); else show from the top
+    // follow the main ant when it's on the tree (the camera's own ask); otherwise keep
+    // the lowest ant on the tree visible, as before, so a lone busy subagent (main idle
+    // at home) still stays in view. The mound and its trail always show regardless.
     let lowest = -1
     for (const rowIdx of byRow.keys()) lowest = Math.max(lowest, rowIdx)
+    const anchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
 
     const windowFor = (visible: number) => {
-      let s = lowest >= 0 ? Math.max(0, lowest - visible + 1) : 0
+      let s = anchor >= 0 ? Math.max(0, anchor - visible + 1) : 0
       s = Math.min(s, Math.max(0, treeLines.length - visible))
       const e = Math.min(treeLines.length, s + visible)
       return { start: s, end: e }

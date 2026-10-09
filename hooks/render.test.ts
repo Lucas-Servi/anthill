@@ -396,6 +396,7 @@ test('every line fits the width at 25, 40 and 60 columns', () => {
     ant({ id: 'x', label: 'twin', breed: 'fable', task: 'returning', at: TRAIL_STEPS - 1 - TRAIL_STEPS }),
     ant({ id: 'w', label: 'worker', breed: 'opus', task: 'working', at: 2 }),
     ant({ id: 'b', label: 'builder', breed: 'sonnet', task: 'building', at: 3 }),
+    ant({ id: 'c', label: 'climber', breed: 'haiku', task: 'walking', at: 2, climbDepth: 0 }),
   ]
   for (const width of [25, 40, 60]) {
     for (let tick = 0; tick < 4; tick++) {
@@ -577,4 +578,43 @@ test('an unresolved fold shows a generic collapsing block, never (summarized ...
   const settled: Fold = { id: 'main', label: 'main', before: 9, after: 2, frame: 0, settle: 3 }
   const settledText = compose(TREE, [], [settled], { width: 40, height: 20, tick: 0 }).map(lineText).join('\n')
   expect(settledText.includes('(summarized, 9 → 2)')).toBe(true)
+})
+
+test('a climbing ant\'s glyph overlays the shallower ancestor column, not the row\'s own prefix end', () => {
+  const a = ant({ id: 'a1', at: 1, task: 'walking', climbDepth: 0, color: '#123456' })
+  const lines = compose(TREE, [a], [], { width: 60, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('main.ts'))!
+  const text = lineText(treeLine)
+  const glyph = antGlyph('sonnet', 'walking', 0)
+  // overlaid right after the indent, over the ancestor's trunk column — not appended before the name
+  expect(text.startsWith(' '.repeat(TREE_INDENT) + glyph)).toBe(true)
+  expect(text.indexOf(glyph) < text.indexOf('main.ts')).toBe(true)
+  // colored as the overlay, not the row's own dim prefix
+  const colored = treeLine.find(s => s.color === '#123456')
+  expect(colored?.text.startsWith(glyph[0]!)).toBe(true)
+})
+
+test('a non-climbing ant (climbDepth absent) renders exactly as before: appended after the full prefix', () => {
+  const a = ant({ id: 'a1', at: 1, task: 'walking', color: '#123456' })
+  const lines = compose(TREE, [a], [], { width: 60, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('main.ts'))!
+  const text = lineText(treeLine)
+  const glyph = antGlyph('sonnet', 'walking', 0)
+  expect(text.startsWith(' '.repeat(TREE_INDENT) + glyph)).toBe(false)
+  expect(text.indexOf(glyph) < text.indexOf('main.ts')).toBe(true)
+})
+
+test('compose keeps the main ant\'s row visible, over a farther busy ant, when both can\'t fit', () => {
+  const tall: Row[] = Array.from({ length: 50 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
+  const ants: Ant[] = [ant({ id: 'main', at: 2, task: 'working' }), ant({ id: 'sub', at: 45, task: 'working' })]
+  const lines = compose(tall, ants, [], { width: 30, height: 15, tick: 0, mainRow: 2 })
+  expect(lines.some(l => lineText(l).includes('f2.ts'))).toBe(true)
+  expect(lines.some(l => lineText(l).includes('f45.ts'))).toBe(false)
+})
+
+test('compose falls back to the lowest busy ant when mainRow is undefined (main idle at home)', () => {
+  const tall: Row[] = Array.from({ length: 50 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
+  const ants: Ant[] = [ant({ id: 'sub', at: 45, task: 'working' })]
+  const lines = compose(tall, ants, [], { width: 30, height: 15, tick: 0 })
+  expect(lines.some(l => lineText(l).includes('f45.ts'))).toBe(true)
 })

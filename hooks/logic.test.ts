@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Ant, Row } from '../types'
-import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, isBuilt, relativize, BUILD_STEPS } from './tree'
+import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, branchPrefixSteps, isBuilt, relativize, BUILD_STEPS } from './tree'
 import {
   breedOf,
   newAnt,
@@ -173,6 +173,23 @@ test('branchPrefixes shows progressive build connectors, name only at full progr
   expect(branchPrefixes([full])[0]).toBe('└── ')
   expect(isBuilt(full)).toBe(true)
   expect(isBuilt({ ...building, built: undefined })).toBe(true)
+})
+
+test('branchPrefixSteps joins to the same string branchPrefixes draws, with one step per ancestor', () => {
+  const rows: Row[] = [
+    { path: 'alpha', name: 'alpha', depth: 0, isDir: true, isOpen: true },
+    { path: 'alpha/a.ts', name: 'a.ts', depth: 1, isDir: false },
+    { path: 'alpha/b.ts', name: 'b.ts', depth: 1, isDir: false },
+    { path: 'zeta.ts', name: 'zeta.ts', depth: 0, isDir: false },
+  ]
+  const prefixes = branchPrefixes(rows)
+  const steps = branchPrefixSteps(rows)
+  for (let i = 0; i < rows.length; i++) {
+    expect(steps[i]!.join('')).toBe(prefixes[i])
+    expect(steps[i]!.length).toBe(rows[i]!.depth + 1)
+  }
+  expect(steps[1]).toEqual(['│   ', '├── '])
+  expect(steps[2]).toEqual(['│   ', '└── '])
 })
 
 test('relativize handles absolute, relative and outside-cwd paths', () => {
@@ -727,4 +744,65 @@ test('seatOrbits seats busy ants on ORBIT like seatPeeks seats home ants on PEEK
   // a newcomer takes the freed seat 0
   ants = seatOrbits([...ants, markBusy(newAnt('d', 'd', 'other', colorFor(3)))])
   expect(ants.find(a => a.id === 'd')!.busySeat).toBe(0)
+})
+
+test('a walking ant moving between rows at the same depth never climbs', () => {
+  const rows: Row[] = [
+    { path: 'a.ts', name: 'a.ts', depth: 0, isDir: false },
+    { path: 'b.ts', name: 'b.ts', depth: 0, isDir: false },
+  ]
+  let ant = assign(newAnt('1', 'main', 'other', '#fff'), { id: 'j', path: 'b.ts', kind: 'work' })
+  let rowsNow = rows
+  ;[ant, rowsNow] = climbDown(ant, rowsNow)
+  ;[ant, rowsNow] = tick(ant, rowsNow) // onto row 0 (coming off the trail: no "from" depth)
+  expect(ant.at).toBe(0)
+  expect(ant.climbDepth).toBeUndefined()
+  ;[ant, rowsNow] = tick(ant, rowsNow) // row 0 -> row 1, same depth
+  expect(ant.at).toBe(1)
+  expect(ant.climbDepth).toBeUndefined()
+})
+
+test('a walking ant stepping into a deeper row is drawn one tick behind at the shallower depth, then lands', () => {
+  const rows: Row[] = [
+    { path: 'dir', name: 'dir', depth: 0, isDir: true, isOpen: true },
+    { path: 'dir/file.ts', name: 'file.ts', depth: 1, isDir: false },
+  ]
+  let ant = assign(newAnt('1', 'main', 'other', '#fff'), { id: 'j', path: 'dir/file.ts', kind: 'work' })
+  let rowsNow = rows
+  ;[ant, rowsNow] = climbDown(ant, rowsNow)
+  ;[ant, rowsNow] = tick(ant, rowsNow) // onto row 0 (depth 0)
+  expect(ant.at).toBe(0)
+  expect(ant.climbDepth).toBeUndefined()
+  ;[ant, rowsNow] = tick(ant, rowsNow) // row 0 (depth 0) -> row 1 (depth 1): lags at depth 0 this tick
+  expect(ant.at).toBe(1)
+  expect(ant.task).toBe('walking')
+  expect(ant.climbDepth).toBe(0)
+  ;[ant, rowsNow] = tick(ant, rowsNow) // arrives, starts working: lands, no more lag
+  expect(ant.task).toBe('working')
+  expect(ant.climbDepth).toBeUndefined()
+})
+
+test('climbing into a deeper row adds no extra ticks to reaching it (same formula as a flat row)', () => {
+  const rows: Row[] = [
+    { path: 'dir', name: 'dir', depth: 0, isDir: true, isOpen: true },
+    { path: 'dir/file.ts', name: 'file.ts', depth: 1, isDir: false },
+  ]
+  let ant = assign(newAnt('1', 'main', 'other', '#fff'), { id: 'j', path: 'dir/file.ts', kind: 'work' })
+  let ticks: number
+  // same TRAIL_STEPS + r + 2 formula as the flat-tree case ('a full trip to row r and back'):
+  // the depth change along the way costs no extra ticks.
+  ;[ant, ticks] = runUntil(ant, rows, (a) => a.task === 'working')
+  expect(ticks).toBe(TRAIL_STEPS + 1 + 2)
+  expect(ant.at).toBe(1)
+})
+
+test('a returning ant crossing from a deep row to a shallow one shows no climb (no further-out column to lag at)', () => {
+  const rows: Row[] = [
+    { path: 'dir', name: 'dir', depth: 0, isDir: true, isOpen: true },
+    { path: 'dir/file.ts', name: 'file.ts', depth: 1, isDir: false },
+  ]
+  let ant: Ant = { ...newAnt('1', 'main', 'other', '#fff'), at: 1, task: 'returning', climbDepth: 0 }
+  ;[ant] = tick(ant, rows)
+  expect(ant.at).toBe(0)
+  expect(ant.climbDepth).toBeUndefined()
 })
