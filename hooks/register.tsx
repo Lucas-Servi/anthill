@@ -9,6 +9,9 @@ import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from '.
 const PANE = 'anthill'
 const TICK_MS = 120
 const MAIN = 'main'
+// How many idle timer firings between antennae wiggles, while every ant is home and
+// there's nothing to crawl to: a slow idle animation, not the full simulation tick.
+const IDLE_WIGGLE_EVERY = 4
 
 const rowsAtom = atom({ plugin: 'anthill', key: 'rows' } as const, [] as Row[])
 const antsAtom = atom({ plugin: 'anthill', key: 'ants' } as const, [] as Ant[])
@@ -113,9 +116,22 @@ export const register: Register = on => {
     await $.command.register({ name: 'anthill', description: 'Show the ant colony crawling your file tree' })
     if (e.isInteractive) void $.ui.open({ id: PANE, title: 'Anthill' })
 
+    let idleTicks = 0
     $.clock.every(TICK_MS, () => {
       const busy = ants.some(a => a.task !== 'home' || a.leaving) || rows.some(r => r.built !== undefined)
-      if (!busy) return
+      if (!busy) {
+        // Nothing to crawl to: the ants resting in the hole still look busy down
+        // there, with a slow antennae wiggle. The simulation tick itself (and
+        // anything that depends on it, like the mound's sparkle) stays put, so an
+        // idle session doesn't keep ticking it.
+        idleTicks++
+        if (idleTicks % IDLE_WIGGLE_EVERY === 0 && ants.some(a => a.task === 'home')) {
+          ants = ants.map(a => (a.task === 'home' ? { ...a, frame: a.frame + 1 } : a))
+          void update($, antsAtom, () => ants)
+        }
+        return
+      }
+      idleTicks = 0
       tick++
       ;({ ants, rows } = step(ants, rows))
       void publish($)

@@ -85,8 +85,14 @@ const toLine = (cells: Cell[]): Line => {
   return line
 }
 
-/** Antennae of an ant peeking out of the hole. */
-export const PEEK = '"'
+/**
+ * Antennae of an ant resting in the hole, busy with the colony's own work: a
+ * slow idle wiggle between two frames (register.tsx advances `frame` for a
+ * home ant even with no file to crawl to, so the hole never looks frozen).
+ */
+const PEEK_FRAMES: readonly [string, string] = ['"', "'"]
+export const PEEK = PEEK_FRAMES[0]
+export const peekGlyph = (frame: number): string => PEEK_FRAMES[frame % 2]!
 
 // ---- ant glyphs -----------------------------------------------------------
 
@@ -161,16 +167,18 @@ const moundLines = (ants: Ant[], tick: number): Line[] => {
     const at = a.peek === undefined ? undefined : PEEKS[a.peek]
     const row = at && cells[at.line]
     if (!at || !row) continue
-    paint(row, at.col, PEEK, a.color, true)
+    paint(row, at.col, peekGlyph(a.frame), a.color, true)
     if (at.line === HOLE.line) inMouth = true
   }
   // Antennae darken their whole mouth cell (it keeps the hole's ground); the rest of
-  // the mouth does the same, or the hole looks lopsided on a light terminal.
+  // the mouth does the same, or the hole looks lopsided on a light terminal. A cell an
+  // ant painted never has the hole's own color (it's the ant's), so this only touches
+  // cells no antennae reached.
   const mouth = cells[HOLE.line]
   if (inMouth && mouth) {
     for (let col = HOLE.start; col <= HOLE.end; col++) {
       const c = mouth[col]
-      if (c && c.ch !== PEEK && c.color === MOUND_PALETTE.H) mouth[col] = { ...c, bg: MOUND_PALETTE.H }
+      if (c && c.color === MOUND_PALETTE.H) mouth[col] = { ...c, bg: MOUND_PALETTE.H }
     }
   }
 

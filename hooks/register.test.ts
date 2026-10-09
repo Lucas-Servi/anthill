@@ -175,3 +175,12 @@ test('a half-built branch saved with no ant left to build it is shown complete',
   expect(await pane.find({ text: 'NEW.md' })).toBeDefined()
   expect(await idles()).toBe(true)
 })
+
+test('resting ants wiggle their antennae while idle, without advancing the simulation tick', async ($, on) => {
+  const { latest, pane, idles } = await session($, on, DIRS, [])
+  const frameOf = () => (latest.ants[0] as unknown as { frame: number }).frame
+  const before = frameOf()
+  expect(await idles(120 * 20)).toBe(true) // nothing to crawl to: the tick itself never moves
+  expect(frameOf()).toBeGreaterThan(before) // but the ant resting in the hole still looks busy
+  expect(await pane.find({ text: 'README.md' })).toBeDefined()
+})

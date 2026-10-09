@@ -487,3 +487,15 @@ test('an ant crowded off its summit point steps aside, the one nearer the hole s
   // further along the trail (leftward), right beside it
   expect(startOf('#222222')).toBe(glyphStart(TRAIL[1]!, 5) - 5)
 })
+
+test('a resting ant\'s antennae wiggle between two frames as its own frame advances, not with tick', () => {
+  const a = ant({ id: 'm', color: '#ff5f5f', frame: 0 })
+  const slot = PEEKS[0]!
+  const atFrame = (frame: number) => cells(compose(TREE, [{ ...a, frame }], { width: 40, height: 20, tick: 99 })[slot.line])[slot.col]!.ch
+  expect(atFrame(0)).toBe(PEEK)
+  expect(atFrame(1)).not.toBe(PEEK)
+  expect(atFrame(2)).toBe(PEEK)
+  expect(atFrame(3)).toBe(atFrame(1))
+  // the tick (the mound's own sparkle counter) never moves the antennae
+  expect(cells(compose(TREE, [a], { width: 40, height: 20, tick: 0 })[slot.line])[slot.col]!.ch).toBe(atFrame(0))
+})
