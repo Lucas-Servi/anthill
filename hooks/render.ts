@@ -1,7 +1,6 @@
 import type { Row, Ant, Task, Breed, Fold } from '../types'
 import {
   MOUND,
-  MOUND_MASK,
   MOUND_PALETTE,
   SHAPES,
   TREE_INDENT,
@@ -10,7 +9,7 @@ import {
   type MoundShape,
   type Orientation,
 } from './mound'
-import { inHole, seatPeeks } from './ants'
+import { inHole, seatPeeks, tunnelIndex } from './ants'
 import { branchPrefixSteps, isBuilt } from './tree'
 
 /** A run of text in one style. `bg` is a background color (the hole's, under anything drawn on it). */
@@ -33,10 +32,15 @@ const SPARKLE_COLORS: Record<string, string | undefined> = {
 /** One character cell of the picture. */
 type Cell = { ch: string; color?: string; bg?: string; bold?: boolean }
 
+/** `shape`'s mound/mask at `stage`, falling back to stage 0 for a bad index. */
+const stageArt = (shape: MoundShape, stage: number): { mound: string[]; mask: string[] } =>
+  shape.stages[stage] ?? shape.stages[0]!
+
 /** The mound as cells, colored through its mask; the sparkles on top twinkle with `tick`. */
-const moundCells = (tick: number, shape: MoundShape): Cell[][] =>
-  shape.mound.map((text, li) => {
-    const mask = Array.from(shape.mask[li] ?? '')
+const moundCells = (tick: number, shape: MoundShape, stage: number): Cell[][] => {
+  const { mound, mask: maskLines } = stageArt(shape, stage)
+  return mound.map((text, li) => {
+    const mask = Array.from(maskLines[li] ?? '')
     return Array.from(text).map((ch, i): Cell => {
       if (ch === ' ') return { ch }
       if (li === shape.sparkleLine) {
@@ -48,12 +52,12 @@ const moundCells = (tick: number, shape: MoundShape): Cell[][] =>
       return color ? { ch, color } : { ch }
     })
   })
+}
 
-/** A busy ant's dot's current orbit cell, for whichever shape is being drawn. */
-const orbitCellFor = (a: Ant, shape: MoundShape): { line: number; col: number } | undefined => {
-  if (a.busySeat === undefined) return undefined
-  const spacing = Math.floor(shape.orbit.length / shape.orbitSeats)
-  return shape.orbit[(a.busySeat * spacing + a.frame) % shape.orbit.length]
+/** A busy ant's dot's current tunnel cell, for whichever shape is being drawn. */
+const tunnelCellFor = (a: Ant, shape: MoundShape): { line: number; col: number } | undefined => {
+  const i = tunnelIndex(a, shape.tunnel.length)
+  return i === undefined ? undefined : shape.tunnel[i]
 }
 
 /**
@@ -144,16 +148,18 @@ export const workFx = (task: Task, frame: number): string => {
 
 // ---- composition -----------------------------------------------------------
 
-type Opts = { width: number; height: number; tick: number; mainRow?: number; orientation?: Orientation }
+type Opts = {
+  width: number
+  height: number
+  tick: number
+  mainRow?: number
+  orientation?: Orientation
+  /** The mound's growth stage (how full the context window is); defaults to 0, ungrown. */
+  growth?: number
+  /** Tunnel cell indices already dug (see mound.ts's TUNNEL/H_TUNNEL); defaults to none. */
+  dug?: number[]
+}
 
-/** The pane is too short for the usual tall mound to fit beside even one tree row. */
-const HORIZONTAL_HEIGHT_THRESHOLD = 6
-/** Narrower than this, mound and tree side by side would leave neither any real room. */
-const HORIZONTAL_MIN_WIDTH = 40
-
-/** Which mound to draw for a pane this shape: the usual tall one, or the short, wide one. */
-export const orientationFor = (width: number, height: number): Orientation =>
-  height <= HORIZONTAL_HEIGHT_THRESHOLD && width >= HORIZONTAL_MIN_WIDTH ? 'horizontal' : 'vertical'
 
 const clip = (s: string, width: number): string => Array.from(s).slice(0, Math.max(0, width)).join('')
 
@@ -175,8 +181,8 @@ const clipLine = (line: Line, width: number): Line => {
  * Each ant in the hole peeks from its own seat (seatPeeks), so one ant leaving
  * never makes another's antennae jump.
  */
-const moundLines = (ants: Ant[], tick: number, shape: MoundShape): Line[] => {
-  const cells = moundCells(tick, shape)
+const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: number[]): Line[] => {
+  const cells = moundCells(tick, shape, stage)
 
   let inMouth = false
   for (const a of seatPeeks(ants)) {
@@ -246,20 +252,31 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape): Line[] => {
     }
   })
 
-  // busy ants (no file to point to), as a dot orbiting the mound body. seatOrbits
-  // already keeps their seats spaced apart, so unlike the trail no two can ever land
-  // on the same cell here.
-  for (const a of ants) {
-    const cell = orbitCellFor(a, shape)
+  // cells any busy ant's dot has already dug through, drawn before the dots themselves
+  // so a dot passing back over its own tunnel still shows on top of it.
+  for (const i of dug) {
+    const cell = shape.tunnel[i]
     const row = cell && cells[cell.line]
-    if (cell && row) paint(row, cell.col, ORBIT_DOT, a.color)
+    if (cell && row) paint(row, cell.col, DUG_CHAR, MOUND_PALETTE.H!)
+  }
+
+  // busy ants (no file to point to), as a dot digging through the mound body. seatOrbits
+  // already keeps their seats spaced apart, so unlike the trail no two can ever land
+  // on the same cell here (apart from a bounce at the tunnel's ends, briefly hiding one).
+  for (const a of ants) {
+    const cell = tunnelCellFor(a, shape)
+    const row = cell && cells[cell.line]
+    if (cell && row) paint(row, cell.col, BUSY_DOT, a.color)
   }
 
   return cells.map(toLine)
 }
 
-/** A busy ant's dot, orbiting inside the mound while it has no file to point to. */
-const ORBIT_DOT = '•'
+/** A busy ant's dot, digging through the mound body while it has no file to point to. */
+const BUSY_DOT = '•'
+
+/** A tunnel cell some busy ant's dot has already dug through. */
+const DUG_CHAR = '·'
 
 /** Columns `start` (inclusive) to `end` (exclusive) of one mound line, held by an ant. */
 type Span = { start: number; end: number }
@@ -390,13 +407,19 @@ const composeVertical = (
  */
 const composeHorizontal = (
   mound: Line[], foldBlock: Line[], legend: Line[], treeLines: Line[], indent: string,
-  anchor: number, width: number, height: number,
+  anchor: number, width: number, height: number, moundArt: string[],
 ): Line[] => {
+  // The tree's own window: unaffected by the mound's height, since the two share rows
+  // (zipped below) rather than costing separate budget — a tree shorter than the mound
+  // already fits "for free" alongside it, same as the no-fold-no-legend case today.
   const reserved = foldBlock.length + legend.length
   const room = Math.max(0, height - reserved)
   const out = scrollWindow(treeLines, room, anchor, indent)
 
-  const moundWidth = Math.max(0, ...mound.map(l => Array.from(lineText(l)).length))
+  // Measured from the mound's own static art, not the painted lines: an ant's glyph can
+  // be wider than one cell, and painting one near the mound's right edge would otherwise
+  // stretch that one line past the art's real width, making the tree's column drift.
+  const moundWidth = Math.max(0, ...moundArt.map(l => Array.from(l).length))
   const gap = 2
   const rowCount = Math.max(mound.length, out.length)
   const zipped: Line[] = []
@@ -405,16 +428,25 @@ const composeHorizontal = (
     const pad = Math.max(0, moundWidth - Array.from(lineText(left)).length) + gap
     zipped.push([...left, { text: ' '.repeat(pad) }, ...(out[r] ?? [])])
   }
-  return [...zipped, ...foldBlock, ...legend].map(l => clipLine(l, width)).slice(0, height)
+
+  // The zipped block is `rowCount` rows regardless of `room` (at least the mound's own
+  // height), so it has to be checked against `height` explicitly here, or a short pane
+  // would draw fold/legend rows nothing is left to show — silently cut off by the final
+  // slice below, instead of a deliberate choice. Folds give way first, then the legend,
+  // same precedence composeVertical gives them.
+  const keptFold = rowCount + foldBlock.length <= height ? foldBlock : []
+  const keptLegend = rowCount + keptFold.length + legend.length <= height ? legend : []
+  return [...zipped, ...keptFold, ...keptLegend].map(l => clipLine(l, width)).slice(0, height)
 }
 
 export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Line[] => {
   const { width, height } = opts
   const orientation = opts.orientation ?? 'vertical'
   const shape = SHAPES[orientation]
+  const stage = Math.max(0, Math.min(shape.stages.length - 1, opts.growth ?? 0))
 
   // -- mound block --
-  const mound = moundLines(ants, opts.tick, shape)
+  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [])
   const indent = ' '.repeat(TREE_INDENT)
   const foldBlock: Line[] = folds.flatMap(f => foldLines(f, indent))
 
@@ -501,6 +533,6 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const anchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
 
   return orientation === 'horizontal'
-    ? composeHorizontal(mound, foldBlock, legend, treeLines, indent, anchor, width, height)
+    ? composeHorizontal(mound, foldBlock, legend, treeLines, indent, anchor, width, height, stageArt(shape, stage).mound)
     : composeVertical(mound, foldBlock, legend, treeLines, indent, anchor, width, height)
 }

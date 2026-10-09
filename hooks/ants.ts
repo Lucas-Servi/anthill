@@ -1,5 +1,5 @@
 import type { Ant, Breed, Job, Row } from '../types'
-import { HOME, ORBIT, ORBIT_SEATS, PEEKS, SUMMIT } from './mound'
+import { HOME, PEEKS, SUMMIT, TUNNEL_SEATS } from './mound'
 import { BUILD_STEPS, indexOf } from './tree'
 
 export { HOME, TRAIL_STEPS } from './mound'
@@ -43,49 +43,74 @@ export function newAnt(id: string, label: string, breed: Breed, color: string): 
   return { id, label, breed, color, at: HOME, task: 'home', queue: [], doneIds: [], frame: 0 }
 }
 
+/** Drops `leaving`: a retired ant given new work is staying after all. */
+function unretire(ant: Ant): Ant {
+  if (!ant.leaving) return ant
+  const { leaving, ...rest } = ant
+  return rest
+}
+
 export function assign(ant: Ant, job: Job): Ant {
   // A home or busy ant sets out from the hole at once (a file job always beats the
   // generic busy-dot; this also fixes ants saved with an older home `at`); a returning
-  // one turns around wherever it is.
+  // one turns around wherever it is. Either way, a resumed subagent's ant (retired,
+  // then given more work before the tick that would have removed it) stays for good.
   if (ant.task === 'home' || ant.task === 'busy') {
-    const { busySeat, ...rest } = ant
+    const { busySeat, ...rest } = unretire(ant)
     return { ...rest, at: HOME, job, task: 'walking' }
   }
-  if (ant.task === 'returning') return { ...ant, job, task: 'walking' }
+  if (ant.task === 'returning') return { ...unretire(ant), job, task: 'walking' }
   return { ...ant, queue: [...ant.queue, job] }
 }
 
-/** Whether `a`'s dot orbits the mound body: busy, with no file job to point to. */
+/** Whether `a`'s dot digs the mound body: busy, with no file job to point to. */
 export const isBusy = (a: Ant): boolean => a.task === 'busy'
 
 /** Marks a home ant busy (its loop is doing something with no file to point to); a no-op otherwise. */
 export function markBusy(ant: Ant): Ant {
-  return ant.task === 'home' ? { ...ant, task: 'busy' } : ant
+  return ant.task === 'home' ? unretire({ ...ant, task: 'busy' }) : ant
 }
 
-/** Reverts a busy ant to resting at home, dropping its orbit seat; a no-op otherwise. */
+/** Reverts a busy ant to resting at home, dropping its tunnel seat; a no-op otherwise. */
 export function clearBusy(ant: Ant): Ant {
   if (ant.task !== 'busy') return ant
   const { busySeat, ...rest } = ant
   return { ...rest, task: 'home' }
 }
 
-/** The ORBIT cell a busy ant's dot currently sits on. */
-export function orbitCell(a: Ant): { line: number; col: number } | undefined {
-  if (a.busySeat === undefined) return undefined
-  const spacing = Math.floor(ORBIT.length / ORBIT_SEATS)
-  return ORBIT[(a.busySeat * spacing + a.frame) % ORBIT.length]
+/** How far along the length-`length` tunnel a step count has traveled, bouncing at both ends. */
+function bounceAt(pos: number, length: number): number {
+  if (length <= 1) return 0
+  const period = 2 * (length - 1)
+  const m = ((pos % period) + period) % period
+  return m <= length - 1 ? m : period - m
 }
 
 /**
- * Seats busy ants on ORBIT exactly as seatPeeks seats home ants on PEEKS: a seat held
- * for as long as the ant stays busy, so one leaving never makes another's dot jump.
+ * The index into TUNNEL/H_TUNNEL (both `length` cells) a busy ant's dot currently sits
+ * on: its seat starts spaced evenly along the route, even seats heading one way and odd
+ * seats the other, odd seats at full speed and even at half, each bouncing at the ends
+ * rather than looping — a more varied crawl than a simple shared loop, and (seatOrbits
+ * below keeping each seat held) never two dots on the same cell apart from a bounce.
+ */
+export function tunnelIndex(ant: Ant, length: number): number | undefined {
+  if (ant.busySeat === undefined || length <= 0) return undefined
+  const spacing = Math.floor(length / TUNNEL_SEATS)
+  const start = ant.busySeat * spacing
+  const forward = ant.busySeat % 2 === 0
+  const steps = forward ? Math.floor(ant.frame / 2) : ant.frame
+  return bounceAt(start + (forward ? steps : -steps), length)
+}
+
+/**
+ * Seats busy ants on the tunnel exactly as seatPeeks seats home ants on PEEKS: a seat
+ * held for as long as the ant stays busy, so one leaving never makes another's dot jump.
  */
 export function seatOrbits(ants: Ant[]): Ant[] {
   const held = new Set<number>()
   const kept = ants.map((a): Ant => {
     if (a.busySeat === undefined) return a
-    if (isBusy(a) && a.busySeat < ORBIT_SEATS && !held.has(a.busySeat)) {
+    if (isBusy(a) && a.busySeat < TUNNEL_SEATS && !held.has(a.busySeat)) {
       held.add(a.busySeat)
       return a
     }
@@ -94,13 +119,23 @@ export function seatOrbits(ants: Ant[]): Ant[] {
   })
   return kept.map((a): Ant => {
     if (a.busySeat !== undefined || !isBusy(a)) return a
-    for (let seat = 0; seat < ORBIT_SEATS; seat++) {
+    for (let seat = 0; seat < TUNNEL_SEATS; seat++) {
       if (held.has(seat)) continue
       held.add(seat)
       return { ...a, busySeat: seat }
     }
-    return a // more busy ants than seats (ORBIT_SEATS): stays undotted rather than overlapping
+    return a // more busy ants than seats (TUNNEL_SEATS): stays undotted rather than overlapping
   })
+}
+
+/** Every tunnel index a busy ant currently sits on, added to `dug` (sorted, deduplicated). */
+export function dig(dug: number[], ants: Ant[], length: number): number[] {
+  const set = new Set(dug)
+  for (const a of ants) {
+    const i = tunnelIndex(a, length)
+    if (i !== undefined) set.add(i)
+  }
+  return [...set].sort((x, y) => x - y)
 }
 
 /** Clears `climbDepth` outright: the ant is standing on its row, not transiting. */

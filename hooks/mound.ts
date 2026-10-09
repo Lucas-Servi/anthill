@@ -101,27 +101,46 @@ export const PEEKS: { line: number; col: number }[] = [
 ]
 
 /**
- * A small loop inside the mound's shaded body, where a busy ant's dot orbits
- * while it has no file to point to: clear of the trail, the peek slots, the
- * hole and the sparkle line (verified against MOUND/MOUND_MASK directly).
+ * A winding route through the mound's shaded body, where a busy ant's dot digs as it
+ * goes (render.ts paints every cell the route has visited as dug tunnel, and the dot
+ * itself on top): clear of the trail, the peek slots, the hole and the sparkle line
+ * (verified against MOUND/MOUND_MASK directly, and that consecutive points are always
+ * adjacent). Kept the same length as H_TUNNEL so a seat's position along either means
+ * the same thing in both orientations.
  */
-export const ORBIT: { line: number; col: number }[] = [
+export const TUNNEL: { line: number; col: number }[] = [
+  { line: 4, col: 3 },
+  { line: 4, col: 4 },
+  { line: 3, col: 4 },
+  { line: 3, col: 5 },
+  { line: 4, col: 5 },
+  { line: 4, col: 6 },
+  { line: 4, col: 7 },
   { line: 3, col: 7 },
+  { line: 3, col: 6 },
+  { line: 2, col: 6 },
+  { line: 2, col: 7 },
+  { line: 2, col: 8 },
   { line: 3, col: 8 },
+  { line: 4, col: 8 },
+  { line: 4, col: 9 },
   { line: 3, col: 9 },
   { line: 3, col: 10 },
-  { line: 3, col: 11 },
-  { line: 3, col: 12 },
-  { line: 4, col: 12 },
-  { line: 4, col: 11 },
   { line: 4, col: 10 },
-  { line: 4, col: 9 },
-  { line: 4, col: 8 },
-  { line: 4, col: 7 },
+  { line: 4, col: 11 },
+  { line: 4, col: 12 },
+  { line: 3, col: 12 },
+  { line: 3, col: 11 },
+  { line: 2, col: 11 },
+  { line: 2, col: 12 },
+  { line: 2, col: 13 },
+  { line: 3, col: 13 },
+  { line: 4, col: 13 },
+  { line: 4, col: 14 },
 ]
 
-/** How many busy ants can orbit at once, evenly spaced so their dots never coincide. */
-export const ORBIT_SEATS = 6
+/** How many busy ants can dig at once, evenly spaced so their dots never coincide. */
+export const TUNNEL_SEATS = 6
 
 /** The trail point index for an `Ant.at`, or undefined when the ant is in the hole or on the tree. */
 export const trailIndex = (at: number): number | undefined =>
@@ -131,14 +150,426 @@ export const trailIndex = (at: number): number | undefined =>
 export const glyphStart = (p: TrailPoint, width: number): number =>
   Math.max(0, p.align === 'left' ? p.col : p.col - Math.floor(width / 2))
 
+/**
+ * How the mound grows as the context window fills, each stage a strict extension of the
+ * last: every stage's lines only ever gain characters appended past the previous stage's
+ * (never rewriting a cell), so the trail, peeks, hole and tunnel — all addressed by fixed
+ * `line`/`col` coordinates against stage 0 — stay valid at every stage without having to
+ * repeat them per stage. Stage 0 is MOUND/MOUND_MASK themselves, kept as the first entry
+ * so `shape.stages[shape.stages.length - 1]` and `shape.stages[0]` both always exist.
+ */
+export const GROWTH: { mound: string[]; mask: string[] }[] = [
+  { mound: MOUND, mask: MOUND_MASK },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssds',
+      '   pssddoHHoddssdss',
+      '  psdoolllllloodsds',
+      ' psdollllllllllodsds',
+      ' gTTTTTTTTTTTTTTTTgTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdds',
+      '   pssddoHHoddssddss',
+      '  psdoolllllloodsdds',
+      ' psdollllllllllodsdds',
+      ' gTTTTTTTTTTTTTTTTgTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddds',
+      '   pssddoHHoddssdddss',
+      '  psdoolllllloodsddds',
+      ' psdollllllllllodsddds',
+      ' gTTTTTTTTTTTTTTTTgTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddds',
+      '   pssddoHHoddssddddss',
+      '  psdoolllllloodsdddds',
+      ' psdollllllllllodsdddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddds',
+      '   pssddoHHoddssdddddss',
+      '  psdoolllllloodsddddds',
+      ' psdollllllllllodsddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddds',
+      '   pssddoHHoddssddddddss',
+      '  psdoolllllloodsdddddds',
+      ' psdollllllllllodsdddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddds',
+      '   pssddoHHoddssdddddddss',
+      '  psdoolllllloodsddddddds',
+      ' psdollllllllllodsddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddds',
+      '   pssddoHHoddssddddddddss',
+      '  psdoolllllloodsdddddddds',
+      ' psdollllllllllodsdddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddds',
+      '   pssddoHHoddssdddddddddss',
+      '  psdoolllllloodsddddddddds',
+      ' psdollllllllllodsddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddds',
+      '   pssddoHHoddssddddddddddss',
+      '  psdoolllllloodsdddddddddds',
+      ' psdollllllllllodsdddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddddds',
+      '   pssddoHHoddssdddddddddddss',
+      '  psdoolllllloodsddddddddddds',
+      ' psdollllllllllodsddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddddds',
+      '   pssddoHHoddssddddddddddddss',
+      '  psdoolllllloodsdddddddddddds',
+      ' psdollllllllllodsdddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddddddds',
+      '   pssddoHHoddssdddddddddddddss',
+      '  psdoolllllloodsddddddddddddds',
+      ' psdollllllllllodsddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddddddds',
+      '   pssddoHHoddssddddddddddddddss',
+      '  psdoolllllloodsdddddddddddddds',
+      ' psdollllllllllodsdddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddddddddds',
+      '   pssddoHHoddssdddddddddddddddss',
+      '  psdoolllllloodsddddddddddddddds',
+      ' psdollllllllllodsddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddddddddds',
+      '   pssddoHHoddssddddddddddddddddss',
+      '  psdoolllllloodsdddddddddddddddds',
+      ' psdollllllllllodsdddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddddddddddds',
+      '   pssddoHHoddssdddddddddddddddddss',
+      '  psdoolllllloodsddddddddddddddddds',
+      ' psdollllllllllodsddddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddddddddddds',
+      '   pssddoHHoddssddddddddddddddddddss',
+      '  psdoolllllloodsdddddddddddddddddds',
+      ' psdollllllllllodsdddddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssddddddddddddddddddds',
+      '   pssddoHHoddssdddddddddddddddddddss',
+      '  psdoolllllloodsddddddddddddddddddds',
+      ' psdollllllllllodsddddddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+  {
+    mound: [
+      '      . *  * .',
+      '     .▗▄▟▄▄▙▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '   .▗▟▓▓▒██▒▓▓▙▖▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '  .▟▓▒▒░░░░░░▒▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙ .:',
+      ' .▟▓▒░░░░░░░░░░▒▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ' ,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀,▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '  │',
+    ],
+    mask: [
+      '      w k  k w',
+      '     psssHHsssdddddddddddddddddddds',
+      '   pssddoHHoddssddddddddddddddddddddss',
+      '  psdoolllllloodsdddddddddddddddddddds wk',
+      ' psdollllllllllodsdddddddddddddddddddds',
+      ' gTTTTTTTTTTTTTTTTgTTTTTTTTTTTTTTTTTTTTTTT',
+      '  t',
+    ],
+  },
+]
+
 // ---- horizontal mound: a shorter, wider redraw for a short-and-wide pane -----------
 //
 // Same picture, laid on its side: the hole and its one-at-a-time squeeze sit near the
 // left, the shaded body widens rightward, and the trail ends beside the trunk at the
 // right instead of below it, so ants crawl left-to-right instead of top-to-bottom. Kept
-// to the same TRAIL_STEPS/SUMMIT/PEEKS.length/ORBIT_SEATS as the vertical mound (see
-// MOUND is a small block / mound.ts tests), so ants.ts's gating logic needs no changes
-// at all for this orientation — only its geometry (line/col) differs.
+// to the same TRAIL_STEPS/SUMMIT/PEEKS.length/TUNNEL_SEATS as the vertical mound (see
+// the "horizontal trail keeps the same shape" test in render.test.ts), so ants.ts's
+// gating logic needs no changes at all for this orientation — only its geometry differs.
 
 export const H_MOUND: string[] = [
   '  . *  * .',
@@ -186,23 +617,383 @@ export const H_PEEKS: { line: number; col: number }[] = [
   { line: 2, col: 5 },
 ]
 
-/** Clear of H_TRAIL/H_PEEKS/H_HOLE/the sparkle line, on the shaded body's two middle lines. */
-export const H_ORBIT: { line: number; col: number }[] = [
-  { line: 2, col: 14 },
-  { line: 2, col: 15 },
-  { line: 2, col: 16 },
-  { line: 2, col: 17 },
-  { line: 2, col: 18 },
-  { line: 2, col: 19 },
-  { line: 3, col: 19 },
-  { line: 3, col: 18 },
-  { line: 3, col: 17 },
-  { line: 3, col: 16 },
-  { line: 3, col: 15 },
-  { line: 3, col: 14 },
+/**
+ * Clear of H_TRAIL/H_PEEKS/H_HOLE/the sparkle line, winding through the shaded body's
+ * three lines. Same length as TUNNEL (see above).
+ */
+export const H_TUNNEL: { line: number; col: number }[] = [
+  { line: 1, col: 1 },
+  { line: 1, col: 2 },
+  { line: 1, col: 3 },
+  { line: 1, col: 4 },
+  { line: 2, col: 4 },
+  { line: 2, col: 3 },
+  { line: 2, col: 2 },
+  { line: 2, col: 1 },
+  { line: 3, col: 1 },
+  { line: 3, col: 2 },
+  { line: 3, col: 3 },
+  { line: 3, col: 4 },
+  { line: 3, col: 5 },
+  { line: 3, col: 6 },
+  { line: 3, col: 7 },
+  { line: 3, col: 8 },
+  { line: 3, col: 9 },
+  { line: 3, col: 10 },
+  { line: 3, col: 11 },
+  { line: 2, col: 11 },
+  { line: 1, col: 11 },
+  { line: 1, col: 10 },
+  { line: 2, col: 10 },
+  { line: 2, col: 9 },
+  { line: 2, col: 8 },
+  { line: 2, col: 7 },
+  { line: 1, col: 7 },
+  { line: 1, col: 8 },
 ]
 
-export const H_ORBIT_SEATS = ORBIT_SEATS
+export const H_TUNNEL_SEATS = TUNNEL_SEATS
+
+/** TUNNEL and H_TUNNEL are kept the same length, so a dug index means the same thing in either. */
+export const TUNNEL_LENGTH = TUNNEL.length
+
+/** H_MOUND/H_MOUND_MASK's growth stages — see GROWTH's own doc comment. */
+export const H_GROWTH: { mound: string[]; mask: string[] }[] = [
+  { mound: H_MOUND, mask: H_MOUND_MASK },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosds',
+      'sddddHHooooolllllllldsdss',
+      'sddddooooooolllllllldsds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdds',
+      'sddddHHooooolllllllldsddss',
+      'sddddooooooolllllllldsdds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddds',
+      'sddddHHooooolllllllldsdddss',
+      'sddddooooooolllllllldsddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddds',
+      'sddddHHooooolllllllldsddddss',
+      'sddddooooooolllllllldsdddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddds',
+      'sddddHHooooolllllllldsdddddss',
+      'sddddooooooolllllllldsddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddds',
+      'sddddHHooooolllllllldsddddddss',
+      'sddddooooooolllllllldsdddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddds',
+      'sddddHHooooolllllllldsdddddddss',
+      'sddddooooooolllllllldsddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddds',
+      'sddddHHooooolllllllldsddddddddss',
+      'sddddooooooolllllllldsdddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddds',
+      'sddddHHooooolllllllldsdddddddddss',
+      'sddddooooooolllllllldsddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddds',
+      'sddddHHooooolllllllldsddddddddddss',
+      'sddddooooooolllllllldsdddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddddds',
+      'sddddHHooooolllllllldsdddddddddddss',
+      'sddddooooooolllllllldsddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddddds',
+      'sddddHHooooolllllllldsddddddddddddss',
+      'sddddooooooolllllllldsdddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddddddds',
+      'sddddHHooooolllllllldsdddddddddddddss',
+      'sddddooooooolllllllldsddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddddddds',
+      'sddddHHooooolllllllldsddddddddddddddss',
+      'sddddooooooolllllllldsdddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddddddddds',
+      'sddddHHooooolllllllldsdddddddddddddddss',
+      'sddddooooooolllllllldsddddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddddddddds',
+      'sddddHHooooolllllllldsddddddddddddddddss',
+      'sddddooooooolllllllldsdddddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddddddddddds',
+      'sddddHHooooolllllllldsdddddddddddddddddss',
+      'sddddooooooolllllllldsddddddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddddddddddds',
+      'sddddHHooooolllllllldsddddddddddddddddddss',
+      'sddddooooooolllllllldsdddddddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosddddddddddddddddddds',
+      'sddddHHooooolllllllldsdddddddddddddddddddss',
+      'sddddooooooolllllllldsddddddddddddddddddds',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+  {
+    mound: [
+      '  . *  * .',
+      '▗▒▒▒▒▄▄▒▒▒▒▒▒▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖',
+      '▟▓▓▓▓▄▄▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙▖',
+      '▟▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░▓▙▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▙ .:',
+      ',▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│,',
+    ],
+    mask: [
+      '  w k  k w',
+      'sooooHHdddddosdddddddddddddddddddds',
+      'sddddHHooooolllllllldsddddddddddddddddddddss',
+      'sddddooooooolllllllldsdddddddddddddddddddds wk',
+      'gTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtg',
+    ],
+  },
+]
+
+export const GROWTH_STAGES = GROWTH.length
+
+/**
+ * Which growth stage a context-fill fraction (0..1, or beyond — `$.session.usage()`'s
+ * `percent` can exceed 100) selects, spread evenly across `stages` so each one covers
+ * about a `1/stages`-sized slice of the fill. `fill` not a usable number (unmeasured yet,
+ * NaN, negative) reads as stage 0 — a fresh or just-compacted session, nothing grown.
+ */
+export function stageFor(fill: number | undefined, stages: number): number {
+  if (!(fill! > 0)) return 0
+  return Math.round(Math.min(1, fill!) * (stages - 1))
+}
 
 /** Which mound a pane draws: the usual tall one, or the short, wide one. */
 export type Orientation = 'vertical' | 'horizontal'
@@ -211,6 +1002,8 @@ export type Orientation = 'vertical' | 'horizontal'
 export type MoundShape = {
   mound: string[]
   mask: string[]
+  /** mound/mask as they grow with the context window; stages[0] is mound/mask themselves. */
+  stages: { mound: string[]; mask: string[] }[]
   sparkleLine: number
   trail: TrailPoint[]
   trailSteps: number
@@ -218,14 +1011,15 @@ export type MoundShape = {
   home: number
   hole: { line: number; start: number; end: number }
   peeks: { line: number; col: number }[]
-  orbit: { line: number; col: number }[]
-  orbitSeats: number
+  tunnel: { line: number; col: number }[]
+  tunnelSeats: number
 }
 
 export const SHAPES: Record<Orientation, MoundShape> = {
   vertical: {
     mound: MOUND,
     mask: MOUND_MASK,
+    stages: GROWTH,
     sparkleLine: SPARKLE_LINE,
     trail: TRAIL,
     trailSteps: TRAIL_STEPS,
@@ -233,12 +1027,13 @@ export const SHAPES: Record<Orientation, MoundShape> = {
     home: HOME,
     hole: HOLE,
     peeks: PEEKS,
-    orbit: ORBIT,
-    orbitSeats: ORBIT_SEATS,
+    tunnel: TUNNEL,
+    tunnelSeats: TUNNEL_SEATS,
   },
   horizontal: {
     mound: H_MOUND,
     mask: H_MOUND_MASK,
+    stages: H_GROWTH,
     sparkleLine: H_SPARKLE_LINE,
     trail: H_TRAIL,
     trailSteps: H_TRAIL_STEPS,
@@ -246,8 +1041,8 @@ export const SHAPES: Record<Orientation, MoundShape> = {
     home: H_HOME,
     hole: H_HOLE,
     peeks: H_PEEKS,
-    orbit: H_ORBIT,
-    orbitSeats: H_ORBIT_SEATS,
+    tunnel: H_TUNNEL,
+    tunnelSeats: H_TUNNEL_SEATS,
   },
 }
 

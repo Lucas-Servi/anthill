@@ -17,11 +17,12 @@ import {
   isBusy,
   markBusy,
   clearBusy,
-  orbitCell,
+  tunnelIndex,
+  dig,
   seatOrbits,
   inHole,
 } from './ants'
-import { SUMMIT, TRAIL, ORBIT, ORBIT_SEATS } from './mound'
+import { SUMMIT, TRAIL, TUNNEL, TUNNEL_SEATS, GROWTH, H_GROWTH, GROWTH_STAGES, stageFor } from './mound'
 
 /** Runs one tick on a single ant, unwrapping the (always non-empty) result. */
 function tick(ant: Ant, rows: Row[]): [Ant, Row[]] {
@@ -707,29 +708,71 @@ test('inHole excludes a busy ant even though its at is HOME', () => {
   expect(inHole(markBusy(home))).toBe(false)
 })
 
-test('orbitCell cycles through all of ORBIT over ORBIT.length ticks, offset by busySeat', () => {
+test('tunnelIndex always stays within the tunnel, and is undefined with no busySeat', () => {
   const ant = { ...markBusy(newAnt('1', 'main', 'other', '#fff')), busySeat: 0 }
-  const seen = new Set<string>()
-  for (let f = 0; f < ORBIT.length; f++) {
-    const cell = orbitCell({ ...ant, frame: f })
-    expect(cell).toBeDefined()
-    seen.add(`${cell!.line},${cell!.col}`)
+  for (let f = 0; f < 200; f++) {
+    const i = tunnelIndex({ ...ant, frame: f }, TUNNEL.length)
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(i).toBeLessThan(TUNNEL.length)
   }
-  expect(seen.size).toBe(ORBIT.length)
-  expect(orbitCell(newAnt('1', 'main', 'other', '#fff'))).toBeUndefined() // no busySeat: no dot
+  expect(tunnelIndex(newAnt('1', 'main', 'other', '#fff'), TUNNEL.length)).toBeUndefined() // no busySeat: no dot
 })
 
-test('two busy ants on any pair of seats never share an ORBIT cell, at any frame', () => {
-  for (let s1 = 0; s1 < ORBIT_SEATS; s1++) {
-    for (let s2 = 0; s2 < ORBIT_SEATS; s2++) {
-      if (s1 === s2) continue
-      for (let f = 0; f < ORBIT.length; f++) {
-        const a = orbitCell({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: s1, frame: f })!
-        const b = orbitCell({ ...markBusy(newAnt('b', 'b', 'other', '#fff')), busySeat: s2, frame: f })!
-        expect(a.line === b.line && a.col === b.col).toBe(false)
+test('tunnelIndex moves even seats forward at half speed, odd seats backward at full speed, bouncing at either end', () => {
+  const at = (seat: number, frame: number) =>
+    tunnelIndex({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: seat, frame }, TUNNEL.length)
+  // seat 0 (even, forward, half speed): advances by 1 only every other frame
+  expect([at(0, 0), at(0, 1), at(0, 2), at(0, 3)]).toEqual([0, 0, 1, 1])
+  // seat 1 (odd, backward, full speed): starts further along, counts straight down, then
+  // bounces back up once it reaches 0 rather than wrapping or going negative
+  const spacing = Math.floor(TUNNEL.length / TUNNEL_SEATS)
+  expect(at(1, 0)).toBe(spacing)
+  expect(at(1, spacing)).toBe(0)
+  expect(at(1, spacing + 1)).toBe(1)
+})
+
+test('two busy ants on different seats usually sit on different tunnel cells, though a crossing can briefly coincide', () => {
+  let coincided = 0
+  let apart = 0
+  for (let s1 = 0; s1 < TUNNEL_SEATS; s1++) {
+    for (let s2 = s1 + 1; s2 < TUNNEL_SEATS; s2++) {
+      for (let f = 0; f < 40; f++) {
+        const a = tunnelIndex({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: s1, frame: f }, TUNNEL.length)
+        const b = tunnelIndex({ ...markBusy(newAnt('b', 'b', 'other', '#fff')), busySeat: s2, frame: f }, TUNNEL.length)
+        if (a === b) coincided++
+        else apart++
       }
     }
   }
+  expect(apart).toBeGreaterThan(0)
+  expect(coincided).toBeGreaterThan(0) // the varied motion is expected to let two dots cross
+})
+
+test('dig records every busy ant\'s current tunnel index, deduplicated and sorted, ignoring non-busy ants', () => {
+  const busyAt = (seat: number, frame: number): Ant => ({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: seat, frame })
+  const walking: Ant = { ...newAnt('b', 'b', 'other', '#fff'), task: 'walking', at: 0 }
+  const i0 = tunnelIndex(busyAt(0, 0), TUNNEL.length)!
+  const i2 = tunnelIndex(busyAt(2, 0), TUNNEL.length)!
+  const dug = dig([], [busyAt(0, 0), busyAt(2, 0), walking], TUNNEL.length)
+  expect(dug).toEqual([i0, i2].sort((a, b) => a - b))
+  // digging again at the same spot doesn't duplicate; a new spot is added, kept sorted
+  const i1 = tunnelIndex(busyAt(1, 0), TUNNEL.length)!
+  const more = dig(dug, [busyAt(0, 0), busyAt(1, 0)], TUNNEL.length)
+  expect(more).toEqual([...new Set([i0, i1, i2])].sort((a, b) => a - b))
+})
+
+test('stageFor spreads a 0..1 fill evenly across the stages, 0 for an unmeasured or non-positive fill', () => {
+  expect(stageFor(undefined, GROWTH_STAGES)).toBe(0)
+  expect(stageFor(0, GROWTH_STAGES)).toBe(0)
+  expect(stageFor(-1, GROWTH_STAGES)).toBe(0)
+  expect(stageFor(1, GROWTH_STAGES)).toBe(GROWTH_STAGES - 1)
+  expect(stageFor(2, GROWTH_STAGES)).toBe(GROWTH_STAGES - 1) // over 100%: clamped, not out of range
+  expect(stageFor(0.5, GROWTH_STAGES)).toBe(Math.round(0.5 * (GROWTH_STAGES - 1)))
+})
+
+test('GROWTH and H_GROWTH have the same number of stages', () => {
+  expect(GROWTH.length).toBe(H_GROWTH.length)
+  expect(GROWTH.length).toBe(GROWTH_STAGES)
 })
 
 test('seatOrbits seats busy ants on ORBIT like seatPeeks seats home ants on PEEKS: stable, no overlap, freed on release', () => {

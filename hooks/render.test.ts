@@ -1,10 +1,13 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { MOUND, PEEK, antGlyph, workFx, compose, orientationFor, lineText, type Line } from './render'
+import { MOUND, PEEK, antGlyph, workFx, compose, lineText, type Line } from './render'
 import {
+  GROWTH,
+  GROWTH_STAGES,
   HOLE,
   HOME,
+  H_GROWTH,
   H_MOUND,
   H_MOUND_MASK,
   H_SUMMIT,
@@ -12,14 +15,13 @@ import {
   H_TRAIL_STEPS,
   MOUND_MASK,
   MOUND_PALETTE,
-  ORBIT,
-  ORBIT_SEATS,
   PEEKS,
   SPARKLE_LINE,
   SUMMIT,
   TRAIL,
   TRAIL_STEPS,
   TREE_INDENT,
+  TUNNEL,
   glyphStart,
 } from './mound'
 
@@ -544,48 +546,60 @@ test('a resting ant\'s antennae wiggle between two frames as its own frame advan
   expect(cells(compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })[slot.line])[slot.col]!.ch).toBe(atFrame(0))
 })
 
-test('ORBIT cells are all light-shade and disjoint from TRAIL, PEEKS, HOLE and the sparkle line', () => {
+test('TUNNEL cells are all on the shaded body, disjoint from TRAIL/PEEKS/HOLE/the sparkle line, and form one winding path', () => {
   const occupied = new Set<string>()
   for (const p of TRAIL) occupied.add(`${p.line},${p.col}`)
   for (const p of PEEKS) occupied.add(`${p.line},${p.col}`)
   for (let c = HOLE.start; c <= HOLE.end; c++) occupied.add(`${HOLE.line},${c}`)
 
-  expect(ORBIT.length % ORBIT_SEATS).toBe(0)
-  for (const p of ORBIT) {
+  const seen = new Set<string>()
+  for (const p of TUNNEL) {
     expect(p.line).not.toBe(SPARKLE_LINE)
     expect(occupied.has(`${p.line},${p.col}`)).toBe(false)
-    expect(Array.from(MOUND_MASK[p.line]!)[p.col]).toBe('l')
+    expect(['o', 'd', 'l']).toContain(Array.from(MOUND_MASK[p.line]!)[p.col])
+    seen.add(`${p.line},${p.col}`)
+  }
+  expect(seen.size).toBe(TUNNEL.length) // no cell visited twice
+  for (let i = 1; i < TUNNEL.length; i++) {
+    const a = TUNNEL[i - 1]!, b = TUNNEL[i]!
+    expect(Math.abs(a.line - b.line) + Math.abs(a.col - b.col)).toBe(1) // every step touches the last
   }
 })
 
 test('a busy ant draws a dot inside the mound, in its own color, with no peeking antennae', () => {
   const busy = seatOrbits([markBusy(ant({ color: '#5f87ff' }))])[0]!
   const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 0 })
-  const dots = ORBIT.filter(p => cells(lines[p.line])[p.col]?.color === '#5f87ff')
+  const dots = TUNNEL.filter(p => cells(lines[p.line])[p.col]?.color === '#5f87ff')
   expect(dots.length).toBe(1)
   // no antennae anywhere: a busy ant never holds a peek seat
   for (const p of PEEKS) expect(cells(lines[p.line])[p.col]?.ch).not.toBe(PEEK)
 })
 
-test('two busy ants show two dots that never overlap, each in its own color', () => {
+test('two busy ants, seated on different seats, draw two distinct colored dots at a frame where their routes don\'t cross', () => {
   const busy = seatOrbits(['#ff5f5f', '#5fff5f'].map(color => markBusy(ant({ id: color, color }))))
-  for (let f = 0; f < ORBIT.length; f++) {
-    const lines = compose(TREE, busy.map(a => ({ ...a, frame: f })), [], { width: 40, height: 20, tick: 0 })
-    const found = busy.map(a => {
-      const hit = ORBIT.filter(p => cells(lines[p.line])[p.col]?.color === a.color)
-      expect(hit.length).toBe(1)
-      return hit[0]!
-    })
-    expect(found[0]!.line === found[1]!.line && found[0]!.col === found[1]!.col).toBe(false)
-  }
+  expect(busy[0]!.busySeat).not.toBe(busy[1]!.busySeat)
+  const lines = compose(TREE, busy.map(a => ({ ...a, frame: 0 })), [], { width: 40, height: 20, tick: 0 })
+  const found = busy.map(a => {
+    const hit = TUNNEL.filter(p => cells(lines[p.line])[p.col]?.color === a.color)
+    expect(hit.length).toBe(1)
+    return hit[0]!
+  })
+  expect(found[0]!.line === found[1]!.line && found[0]!.col === found[1]!.col).toBe(false)
 })
 
-test('a busy ant that gets a real file job stops orbiting and starts walking that same tick', () => {
+test('cells a busy ant\'s dot has passed stay dug (a dark "·"), under the dot itself where it currently sits', () => {
+  const busy = { ...seatOrbits([markBusy(ant({ color: '#5f87ff' }))])[0]!, frame: 4 }
+  const dugCell = TUNNEL[0]! // seat 0, frame 0: the ant started here before reaching frame 4
+  const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 0, dug: [0] })
+  expect(lineText(lines[dugCell.line]!)[dugCell.col]).toBe('·')
+})
+
+test('a busy ant that gets a real file job stops digging and starts walking that same tick', () => {
   const busy = seatOrbits([markBusy(ant({ color: '#ff8700' }))])[0]!
   const walking = assign(busy, { id: 'j', path: 'README.md', kind: 'work' })
   expect(walking.task).toBe('walking')
   const lines = compose(TREE, [walking], [], { width: 40, height: 20, tick: 0 })
-  for (const p of ORBIT) expect(cells(lines[p.line])[p.col]?.color).not.toBe('#ff8700')
+  for (const p of TUNNEL) expect(cells(lines[p.line])[p.col]?.color).not.toBe('#ff8700')
 })
 
 test('compose reserves room for fold blocks above the tree, same precedence as the mound and legend', () => {
@@ -657,13 +671,6 @@ test('a default orientation (none given) renders byte-identical to orientation: 
   expect(withDefault).toEqual(withExplicit)
 })
 
-test('orientationFor switches to horizontal only when short and wide enough', () => {
-  expect(orientationFor(60, 5)).toBe('horizontal')
-  expect(orientationFor(60, 6)).toBe('horizontal')
-  expect(orientationFor(60, 7)).toBe('vertical')
-  expect(orientationFor(20, 5)).toBe('vertical') // short, but too narrow for mound + tree side by side
-})
-
 test('compose in horizontal mode respects width and height', () => {
   const rows: Row[] = Array.from({ length: 10 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
   const ants: Ant[] = [ant({ id: 'a1', at: 2, task: 'working' })]
@@ -698,4 +705,60 @@ test('the tree still scrolls vertically beside the mound in horizontal mode, anc
   const lines = compose(tall, ants, [], { width: 80, height: 5, tick: 0, orientation: 'horizontal', mainRow: 20 })
   expect(lines.some(l => lineText(l).includes('f20.ts'))).toBe(true)
   expect(lines.some(l => lineText(l).includes('f0.ts'))).toBe(false)
+})
+
+test('horizontal mode\'s tree column stays steady regardless of how wide the ant standing at the mound\'s edge is', () => {
+  const atTrailEnd = (breed: Breed): Ant => ant({ id: 'a1', breed, task: 'walking', at: 8 - H_TRAIL_STEPS, color: '#abcdef' })
+  const colOf = (breed: Breed) => {
+    const lines = compose(TREE, [atTrailEnd(breed)], [], { width: 80, height: 5, tick: 0, orientation: 'horizontal' })
+    const line = lines.find(l => lineText(l).includes('src/'))!
+    return lineText(line).indexOf('src/')
+  }
+  expect(colOf('opus')).toBe(colOf('haiku'))
+})
+
+test('horizontal mode drops the legend (not corrupts it) at exactly the mound\'s own height; shows it with one spare row', () => {
+  const ants: Ant[] = [ant({ id: 'a1', task: 'working', at: 0 })]
+  const tight = compose(TREE, ants, [], { width: 80, height: H_MOUND.length, tick: 0, orientation: 'horizontal' })
+  expect(tight.length).toBeLessThanOrEqual(H_MOUND.length)
+  expect(tight.some(l => lineText(l).includes('(sonnet)'))).toBe(false)
+
+  const roomy = compose(TREE, ants, [], { width: 80, height: H_MOUND.length + 1, tick: 0, orientation: 'horizontal' })
+  expect(roomy.some(l => lineText(l).includes('(sonnet)'))).toBe(true)
+})
+
+test('compose draws the mound\'s current growth stage; growth omitted means stage 0', () => {
+  const base = compose(TREE, [], [], { width: 80, height: 20, tick: 0 })
+  const explicit0 = compose(TREE, [], [], { width: 80, height: 20, tick: 0, growth: 0 })
+  expect(base).toEqual(explicit0)
+  expect(base.map(lineText).join('\n').includes('.:')).toBe(false)
+
+  const lastStage = GROWTH_STAGES - 1
+  const grown = compose(TREE, [], [], { width: 80, height: 30, tick: 0, growth: lastStage })
+  expect(grown.map(lineText).join('\n').includes('.:')).toBe(true)
+})
+
+test('a growth stage past the end clamps to the last stage, a negative one to stage 0', () => {
+  const lastStage = GROWTH_STAGES - 1
+  const atLast = compose(TREE, [], [], { width: 80, height: 30, tick: 0, growth: lastStage })
+  const pastEnd = compose(TREE, [], [], { width: 80, height: 30, tick: 0, growth: lastStage + 50 })
+  expect(pastEnd).toEqual(atLast)
+
+  const atZero = compose(TREE, [], [], { width: 80, height: 20, tick: 0, growth: 0 })
+  const negative = compose(TREE, [], [], { width: 80, height: 20, tick: 0, growth: -5 })
+  expect(negative).toEqual(atZero)
+})
+
+test('horizontal mode also grows: H_GROWTH\'s last stage shows the spill flourish too', () => {
+  const grown = compose(TREE, [], [], { width: 100, height: 6, tick: 0, orientation: 'horizontal', growth: GROWTH_STAGES - 1 })
+  expect(grown.map(lineText).join('\n').includes('.:')).toBe(true)
+})
+
+test('GROWTH and H_GROWTH both keep every stage the same number of lines as stage 0', () => {
+  for (const stages of [GROWTH, H_GROWTH]) {
+    for (const { mound, mask } of stages) {
+      expect(mound.length).toBe(stages[0]!.mound.length)
+      expect(mask.length).toBe(stages[0]!.mask.length)
+    }
+  }
 })

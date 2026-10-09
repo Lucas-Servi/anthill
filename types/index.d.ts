@@ -53,7 +53,7 @@ export type Ant = {
   frame: number
   /** Which of the hole's peek slots (mound.ts PEEKS) its antennae hold while it is in the hole. */
   peek?: number
-  /** Which of the mound's orbit seats (mound.ts ORBIT) its dot holds while `task` is `'busy'`. */
+  /** Which of the mound's tunnel seats (mound.ts TUNNEL) its dot holds while `task` is `'busy'`. */
   busySeat?: number
   /**
    * While walking/returning between tree rows of different `depth`: how deep (in
@@ -86,6 +86,9 @@ export type Fold = {
   settle?: number
 }
 
+/** Where the anthill is drawn: the usual docked/inline pane, or the strip above the prompt. */
+export type Layout = 'side' | 'strip'
+
 declare module 'claude-code' {
   interface PluginState {
     anthill: {
@@ -94,6 +97,12 @@ declare module 'claude-code' {
       /** Global animation tick. */
       tick: number
       folds: Fold[]
+      /** Which layout the person last chose; restored to $.store too, so it outlives the session. */
+      layout: Layout
+      /** The mound's growth stage: how full the context window was, last measured. */
+      growth: number
+      /** Tunnel cell indices (mound.ts TUNNEL/H_TUNNEL) some busy ant has already dug through. */
+      dug: number[]
     }
   }
 }

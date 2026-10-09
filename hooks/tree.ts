@@ -166,6 +166,12 @@ export function branchPrefixes(rows: Row[]): string[] {
   return branchPrefixSteps(rows).map((steps) => steps.join(''))
 }
 
+/** Drops a trailing slash: a Grep/Glob `path` naming a directory often has one. */
+function dropTrailingSlash(p: string): string {
+  while (p.length > 0 && p.endsWith('/')) p = p.slice(0, -1)
+  return p
+}
+
 export function relativize(cwd: string, filePath: string): string | null {
   let base = cwd
   while (base.length > 1 && base.endsWith('/')) base = base.slice(0, -1)
@@ -173,11 +179,11 @@ export function relativize(cwd: string, filePath: string): string | null {
   if (!filePath.startsWith('/')) {
     let p = filePath
     while (p.startsWith('./')) p = p.slice(2)
-    return p
+    return dropTrailingSlash(p)
   }
 
   if (filePath === base) return ''
   const prefix = base === '/' ? '/' : `${base}/`
-  if (filePath.startsWith(prefix)) return filePath.slice(prefix.length)
+  if (filePath.startsWith(prefix)) return dropTrailingSlash(filePath.slice(prefix.length))
   return null
 }

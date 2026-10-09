@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ant, Fold, Job, Row } from '../types'
+import type { Ant, Fold, Job, Layout, Row } from '../types'
 import {
   HOME,
   assign,
   breedOf,
   clearBusy,
   colorFor,
+  dig,
   finish,
   markBusy,
   newAnt,
@@ -17,7 +18,8 @@ import {
   shiftForInsert,
   step,
 } from './ants'
-import { compose, orientationFor } from './render'
+import { GROWTH_STAGES, TUNNEL_LENGTH, stageFor } from './mound'
+import { compose } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -28,11 +30,16 @@ const MAIN = 'main'
 const IDLE_WIGGLE_EVERY = 4
 // How many ticks a resolved compaction's settled "(summarized ...)" row holds before it disappears.
 const SETTLE_TICKS = 6
+// How many rows the strip above the prompt may use at most, mound+tree+button together.
+const STRIP_MAX_ROWS = 6
 
 const rowsAtom = atom({ plugin: 'anthill', key: 'rows' } as const, [] as Row[])
 const antsAtom = atom({ plugin: 'anthill', key: 'ants' } as const, [] as Ant[])
 const tickAtom = atom({ plugin: 'anthill', key: 'tick' } as const, 0)
 const foldsAtom = atom({ plugin: 'anthill', key: 'folds' } as const, [] as Fold[])
+const layoutAtom = atom({ plugin: 'anthill', key: 'layout' } as const, 'side' as Layout)
+const growthAtom = atom({ plugin: 'anthill', key: 'growth' } as const, 0)
+const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as number[])
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
@@ -42,6 +49,13 @@ let tick = 0
 let folds: Fold[] = []
 let cwd = ''
 let spawned = 0
+let layout: Layout = 'side'
+/** How full the mound is drawn: a growth stage, 0..GROWTH_STAGES - 1. */
+let growth = 0
+/** Tunnel cells some busy ant's dot has already dug through. */
+let dug: number[] = []
+/** Context tokens at which the mound reaches its last stage; read once at session.start. */
+let growthThreshold = Infinity
 
 const publish = async ($: EngineInterface) => {
   ants = seatOrbits(seatPeeks(ants))
@@ -49,10 +63,21 @@ const publish = async ($: EngineInterface) => {
   await update($, antsAtom, () => ants)
   await update($, tickAtom, () => tick)
   await update($, foldsAtom, () => folds)
-  // Writing state alone isn't a reliable enough redraw signal in practice (confirmed
-  // live: a running /compact and a working background subagent both sat frozen) —
-  // force the mounted pane to repaint instead of trusting the implicit, throttled
-  // redraw-on-read-subscription path.
+  await update($, growthAtom, () => growth)
+  await update($, dugAtom, () => dug)
+  // Two live reports of a frozen pane during a /compact and a working subagent turned
+  // out to be an install running a stale build, not a redraw bug — so this isn't
+  // confirmed necessary. It's kept anyway: $.ui.invalidate is the one documented way to
+  // force a redraw outright, cheaper to call every publish() than to find out the hard
+  // way that the implicit, throttled redraw-on-read-subscription path has a gap.
+  $.ui.invalidate('ui.render')
+}
+
+/** Flips the layout, in state, in $.store (so it outlives the session) and on screen. */
+const setLayout = ($: EngineInterface, next: Layout) => {
+  layout = next
+  void update($, layoutAtom, () => layout)
+  void $.store.set('layout', layout)
   $.ui.invalidate('ui.render')
 }
 
@@ -122,6 +147,12 @@ const jobOf = async ($: EngineInterface, e: Record<string, unknown>) => {
   return job
 }
 
+/** Resets the mound to its unbuilt shape: a resolved compaction, or a /clear. */
+const resetGrowth = () => {
+  growth = 0
+  dug = []
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
@@ -133,13 +164,35 @@ export const register: Register = on => {
     // A fold left with no `after` means the process died mid-compaction: nothing is
     // left to resolve it, so it would otherwise sit forever.
     folds = (await read($, foldsAtom)).filter(f => f.after !== undefined)
+    dug = await read($, dugAtom)
+    growth = await read($, growthAtom)
+    // $.store, not just $.state, since this is the one thing meant to outlive the
+    // session itself (a /clear, a brand-new session): fall back to the atom (an older
+    // save, or a session that hasn't gone through $.store yet), then 'side'.
+    const stored = await $.store.get('layout')
+    layout = stored === 'strip' || stored === 'side' ? stored : (await read($, layoutAtom)) ?? 'side'
     spawned = Math.max(0, ants.length - 1)
     if (rows.length === 0) await listInto($, '', 0)
     if (!ants.some(a => a.id === MAIN)) antFor(MAIN, 'main', await $.session.model())
+
+    // How full the context window really is right now, so a reloaded or resumed session
+    // doesn't start the mound looking freshly dug when the conversation is already long.
+    try {
+      const usage = await $.session.usage({ breakdown: 'summary' })
+      growthThreshold = usage.context.breakdown?.autoCompactThreshold ?? usage.context.window
+      const fill = usage.context.tokens === undefined ? undefined : usage.context.tokens / growthThreshold
+      growth = stageFor(fill, GROWTH_STAGES)
+    } catch {
+      // Leave growth as whatever state had: the mound just won't grow further this session.
+    }
+
     await publish($)
 
-    await $.command.register({ name: 'anthill', description: 'Show the ant colony crawling your file tree' })
-    if (e.isInteractive) void $.ui.open({ id: PANE, title: 'Anthill' })
+    await $.command.register({
+      name: 'anthill',
+      description: 'Show the ant colony: "strip" moves it above the prompt, "side" (or nothing) back to the pane',
+    })
+    if (e.isInteractive && layout === 'side') void $.ui.open({ id: PANE, title: 'Anthill' })
 
     let idleTicks = 0
     $.clock.every(TICK_MS, () => {
@@ -161,6 +214,7 @@ export const register: Register = on => {
       idleTicks = 0
       tick++
       ;({ ants, rows } = step(ants, rows))
+      dug = dig(dug, ants, TUNNEL_LENGTH)
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         .filter(f => f.settle === undefined || f.settle > 0)
@@ -170,7 +224,14 @@ export const register: Register = on => {
     return ran
   })
 
-  on('command.run', { command: 'anthill' }, async $ => {
+  on('command.run', { command: 'anthill' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (arg === 'strip') {
+      setLayout($, 'strip')
+      await $.ui.close({ id: PANE })
+      return { text: 'The anthill moved to the strip above the prompt.' }
+    }
+    setLayout($, 'side')
     await $.ui.open({ id: PANE, title: 'Anthill' })
     return { text: 'The anthill is open.' }
   })
@@ -215,7 +276,12 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     const id = e.agentId ?? MAIN
-    setAnt(markBusy(antFor(id, id === MAIN ? 'main' : 'agent')))
+    const ant = markBusy(antFor(id, id === MAIN ? 'main' : 'agent'))
+    // Refresh main's breed as the turn starts too, not just once it ends: a
+    // /model switch between turns should show up right away, not only after
+    // the next turn.complete (seen live: /model to Opus mid-session left the
+    // legend reading "main (sonnet)" for the whole next, still-running turn).
+    setAnt(id === MAIN ? { ...ant, breed: breedOf(e.model) } : ant)
     await publish($)
     return yield* next(e)
   })
@@ -244,6 +310,10 @@ export const register: Register = on => {
       const before = folds.find(f => f.id === id)?.before ?? e.messages.length
       const after = result.skip !== undefined ? before : result.messages.length
       folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS } : f))
+      // A resolved compaction of main's own conversation (not a dry precompute, and not
+      // skipped) shrinks it back down: the mound and its dug tunnels go back to their own
+      // starting shape too. A subagent's own compaction never touches the mound at all.
+      if (!e.agentId && e.trigger !== 'precompute' && result.skip === undefined) resetGrowth()
       await publish($)
       return result
     } finally {
@@ -255,22 +325,42 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => next(e))
 
+  on('session.end', async ($, e, next) => {
+    const ran = await next(e)
+    // /clear starts a fresh conversation under this same session; nothing else resets
+    // the mound for it (no session.start follows a /clear), so this is the one place to.
+    if (e.reason === 'clear') {
+      resetGrowth()
+      await publish($)
+    }
+    return ran
+  })
+
+  on('session.measure', async ($, e, next) => {
+    const ran = await next(e)
+    // Always the session's own (main's) live context — there's no agentId to filter on;
+    // a subagent's turns don't raise this event at all.
+    if (e.changed.includes('context')) {
+      const fill = e.context.tokens === undefined ? undefined : e.context.tokens / growthThreshold
+      growth = stageFor(fill, GROWTH_STAGES)
+      await publish($)
+    }
+    return ran
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const readAnts = await read($, antsAtom)
     const main = readAnts.find(a => a.id === MAIN)
     const width = Math.max(10, e.props.bodyColumns || 40)
-    // orientationFor needs the pane's real reported height, not the floor below —
-    // that floor would otherwise always keep a short pane in vertical mode.
-    const rawRows = e.props.scroll.bodyRows || 30
-    const orientation = orientationFor(width, rawRows)
-    const height = Math.max(orientation === 'horizontal' ? 5 : 8, rawRows)
+    const height = Math.max(8, e.props.scroll.bodyRows || 30)
     const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
       width,
-      height,
+      height: height - 1, // one row held for the layout button below
       tick: await read($, tickAtom),
       mainRow: main && main.at >= 0 ? main.at : undefined,
-      orientation,
+      growth: await read($, growthAtom),
+      dug: await read($, dugAtom),
     })
 
     return (
@@ -284,6 +374,58 @@ export const register: Register = on => {
             ))}
           </Text>
         ))}
+        <Box justifyContent="flex-end">
+          <Button key="to-strip" plain dimColor hotkey="h" label="▬ strip" onPress={() => setLayout($, 'strip')} />
+        </Box>
+      </Box>
+    )
+  })
+
+  // The band directly above the prompt: a short, wide strip the "▬ strip" button (or
+  // `/anthill strip`) switches to instead of the docked/inline pane. Always-on and
+  // shared, unlike Pane — it hides itself (by answering next(e), the engine's own empty
+  // draw) whenever the layout isn't "strip", or a survey is using the band instead.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || layout !== 'strip') return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const readAnts = await read($, antsAtom)
+    const main = readAnts.find(a => a.id === MAIN)
+    const width = Math.max(10, e.props.bodyColumns || 40)
+    const height = Math.max(3, Math.min(e.props.maxRows, STRIP_MAX_ROWS) - 1) // one row held for the button
+    const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
+      width,
+      height,
+      tick: await read($, tickAtom),
+      mainRow: main && main.at >= 0 ? main.at : undefined,
+      orientation: 'horizontal',
+      growth: await read($, growthAtom),
+      dug: await read($, dugAtom),
+    })
+
+    return (
+      <Box flexDirection="column">
+        {lines.map(line => (
+          <Text wrap="truncate-end">
+            {line.map(seg => (
+              <Text color={seg.color} backgroundColor={seg.bg} dimColor={seg.dim} bold={seg.bold}>
+                {seg.text}
+              </Text>
+            ))}
+          </Text>
+        ))}
+        <Box justifyContent="flex-end">
+          <Button
+            key="to-side"
+            plain
+            dimColor
+            hotkey="s"
+            label="▮ side"
+            onPress={() => {
+              setLayout($, 'side')
+              void $.ui.open({ id: PANE, title: 'Anthill' })
+            }}
+          />
+        </Box>
       </Box>
     )
   })

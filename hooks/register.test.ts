@@ -1,5 +1,5 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
-import { HOME } from './mound'
+import { GROWTH_STAGES, HOME, stageFor } from './mound'
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -27,6 +27,7 @@ test('ants follow tool calls and build new files', async ($, on) => {
   on('fs.exists', ($, e) => ({ value: e.path !== `${CWD}/src/new.ts` }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: undefined }) as never)
+  on('store.get', () => ({ value: undefined }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
 
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
@@ -76,6 +77,7 @@ test('ants saved by an older version are moved into the summit hole', async ($, 
   on('fs.list', ($, e) => ({ value: DIRS[e.path] ?? [] }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: undefined }) as never)
+  on('store.get', () => ({ value: undefined }) as never)
 
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
   expect(served).toBe(true)
@@ -93,6 +95,9 @@ const session = async (
     rows?: { path: string; built?: number }[]
     ants?: { id: string; at: number; task: string }[]
     folds?: { id: string; before: number; after?: number; settle?: number }[]
+    layout?: 'side' | 'strip'
+    growth?: number
+    dug?: number[]
   }[] = [],
   /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job. */
   toolCall: () => unknown = () => ({ result: 'ok' }),
@@ -102,13 +107,16 @@ const session = async (
     rows: [] as { path: string; built?: number }[],
     ants: [] as { id: string; at: number; task: string }[],
     folds: [] as { id: string; before: number; after?: number; settle?: number }[],
+    layout: 'side' as 'side' | 'strip',
+    growth: 0,
+    dug: [] as number[],
     tick: 0,
     ticks: 0,
   }
   on('state.get', ($, e, next) => {
-    const key = (e as { key?: string }).key as 'rows' | 'ants' | 'folds' | undefined
-    const value = key && saved[0]?.[key]
-    if (value) {
+    const key = (e as { key?: string }).key as keyof (typeof saved)[number] | undefined
+    if (key !== undefined && saved[0]?.[key] !== undefined) {
+      const value = saved[0]![key]
       delete saved[0]![key]
       return { value: { value, version: 1 } } as never
     }
@@ -119,6 +127,9 @@ const session = async (
     if (set.key === 'rows') latest.rows = set.value as typeof latest.rows
     if (set.key === 'ants') latest.ants = set.value as typeof latest.ants
     if (set.key === 'folds') latest.folds = set.value as typeof latest.folds
+    if (set.key === 'layout') latest.layout = set.value as typeof latest.layout
+    if (set.key === 'growth') latest.growth = set.value as number
+    if (set.key === 'dug') latest.dug = set.value as number[]
     if (set.key === 'tick') {
       latest.tick = set.value as number
       latest.ticks++
@@ -130,6 +141,8 @@ const session = async (
   on('fs.exists', ($, e) => ({ value: !missing.includes(e.path) }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: undefined }) as never)
+  on('store.get', () => ({ value: undefined }) as never)
+  on('store.set', () => ({ value: undefined }) as never)
   on('tool.call', () => toolCall() as never)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
   const pane = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'Pane', requestId: 'anthill', props: PANE_PROPS as never })
@@ -330,4 +343,166 @@ test('the clock ticks at full rate while only a busy (no-job) ant exists, not th
   await clock.advance(120 * 5)
   expect(latest.tick).toBe(before + 5) // step() ran every tick, not the 4-tick idle wiggle
   await call
+})
+
+/** A full CommandRunInput for `/anthill <args>`: command.run's other fields are pinned/required. */
+const anthillCommand = (args: string) => ({
+  command: 'anthill',
+  args,
+  origin: { kind: 'composer' },
+  presentation: { isFullscreen: false, columns: 80 },
+})
+
+test('/anthill strip switches the layout to strip; /anthill with no args switches back to side', async ($, on) => {
+  on('command.run', () => ({ text: 'ok' }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.close', () => ({ value: undefined }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  const r1 = await $.command.run(anthillCommand('strip') as never)
+  expect(latest.layout).toBe('strip')
+  expect(r1.text?.toLowerCase()).toContain('strip')
+
+  const r2 = await $.command.run(anthillCommand('') as never)
+  expect(latest.layout).toBe('side')
+  expect(r2.text?.toLowerCase()).toContain('open')
+})
+
+test('the strip above the prompt only draws once the layout is "strip", and yields while a survey holds the band', async ($, on) => {
+  // our own AbovePrompt hook yields with next(e) whenever it has nothing to draw (not
+  // "strip", or a survey holds the band); something has to be the bottom of that chain.
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return Box({ children: [] }) as never
+  })
+  on('ui.close', () => ({ value: undefined }) as never)
+  const { latest } = await session($, on, DIRS, [])
+  const stripProps = (hasSurvey: boolean) => ({
+    hasSurvey,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 80,
+    scroll: { offset: 0, bodyRows: 9 },
+    view: {},
+  })
+
+  const whileSide = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'AbovePrompt', props: stripProps(false) as never })
+  expect(await whileSide.find({ text: 'README.md' })).toBeUndefined() // layout is still 'side': draws nothing of ours
+
+  await $.command.run(anthillCommand('strip') as never)
+  expect(latest.layout).toBe('strip')
+  const whileStrip = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'AbovePrompt', props: stripProps(false) as never })
+  expect(await whileStrip.find({ text: 'README.md' })).toBeDefined()
+
+  const surveyed = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'AbovePrompt', props: stripProps(true) as never })
+  expect(await surveyed.find({ text: 'README.md' })).toBeUndefined()
+})
+
+test('session.measure sets the mound\'s growth stage from the context fill, against the threshold read at session.start', async ($, on) => {
+  on('session.usage', () => ({ value: { context: { window: 1000, breakdown: { autoCompactThreshold: 800 } }, rateLimits: [] } }) as never)
+  on('session.measure', () => ({ changed: [] }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
+  expect(latest.growth).toBe(stageFor(400 / 800, GROWTH_STAGES))
+
+  // a measurement that didn't move the context fill is ignored
+  const before = latest.growth
+  await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['rateLimits'] } as never)
+  expect(latest.growth).toBe(before)
+})
+
+test('a resolved main compaction resets the mound\'s growth and dug tunnels; a subagent\'s or a precompute does not', async ($, on) => {
+  on('session.usage', () => ({ value: { context: { window: 1000, breakdown: { autoCompactThreshold: 800 } }, rateLimits: [] } }) as never)
+  on('session.measure', () => ({ changed: [] }) as never)
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest } = await session($, on, DIRS, [])
+
+  await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
+  expect(latest.growth).toBeGreaterThan(0)
+  // dig a cell in, so there's something to see reset alongside growth
+  await $.tool.call({ tool: 'Bash', command: 'echo hi', tool_use_id: 'b1' } as never)
+  await clock.advance(120 * 3)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  expect(latest.dug.length).toBeGreaterThan(0)
+
+  const msgs = (n: number) => Array.from({ length: n }, () => ({ role: 'user', text: 'x', toolUses: [] }))
+
+  // a subagent's own compaction never touches the mound
+  await $.session.compact({ trigger: 'manual', agentId: 'sub1', messages: msgs(4) } as never)
+  expect(latest.growth).toBeGreaterThan(0)
+  expect(latest.dug.length).toBeGreaterThan(0)
+
+  // a precompute never replaces the conversation; the mound stays as it is too
+  await $.session.compact({ trigger: 'precompute', messages: msgs(4) } as never)
+  expect(latest.growth).toBeGreaterThan(0)
+  expect(latest.dug.length).toBeGreaterThan(0)
+
+  // main's own resolved compaction: the mound goes back to its own starting shape
+  await $.session.compact({ trigger: 'manual', messages: msgs(4) } as never)
+  expect(latest.growth).toBe(0)
+  expect(latest.dug).toEqual([])
+})
+
+test('a compaction the engine skipped leaves the mound\'s growth and dug tunnels as they were', async ($, on) => {
+  on('session.usage', () => ({ value: { context: { window: 1000, breakdown: { autoCompactThreshold: 800 } }, rateLimits: [] } }) as never)
+  on('session.measure', () => ({ changed: [] }) as never)
+  on('session.compact', () => ({ skip: 'nothing worth it' }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
+  expect(latest.growth).toBeGreaterThan(0)
+
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'x', toolUses: [] }] } as never)
+  expect(latest.growth).toBeGreaterThan(0)
+})
+
+test('a /clear resets the mound\'s growth and dug tunnels; another reason for the session ending does not', async ($, on) => {
+  on('session.usage', () => ({ value: { context: { window: 1000, breakdown: { autoCompactThreshold: 800 } }, rateLimits: [] } }) as never)
+  on('session.measure', () => ({ changed: [] }) as never)
+  on('session.end', ($, e) => ({ sessionId: (e as { sessionId?: string }).sessionId ?? 's1' }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
+  const before = latest.growth
+  expect(before).toBeGreaterThan(0)
+
+  await $.session.end({ reason: 'exit' } as never)
+  expect(latest.growth).toBe(before)
+
+  await $.session.end({ reason: 'clear' } as never)
+  expect(latest.growth).toBe(0)
+  expect(latest.dug).toEqual([])
+})
+
+test('a busy ant ticking digs tunnel cells into state, which stay put while it keeps going', async ($, on) => {
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'echo hi', tool_use_id: 'b1' } as never)
+  await clock.advance(120 * 5)
+  expect(latest.dug.length).toBeGreaterThan(0)
+})
+
+test('layout is restored from $.store at session.start, taking priority over the state atom', async ($, on) => {
+  on('store.get', ($, e) => ({ value: (e as { key?: string }).key === 'layout' ? 'strip' : undefined }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('fs.list', ($, e) => ({ value: DIRS[e.path] ?? [] }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return Box({ children: [] }) as never
+  })
+
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  const strip = await $.ui.mount({
+    plugin: 'anthill',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {} } as never,
+  })
+  // layout came back as 'strip' from $.store, not the 'side' default
+  expect(await strip.find({ text: 'README.md' })).toBeDefined()
 })
