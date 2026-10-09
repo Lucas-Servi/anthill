@@ -89,12 +89,22 @@ const session = async (
   on: Parameters<TestBody>[1],
   dirs: typeof DIRS,
   missing: string[],
-  saved: { rows?: { path: string; built?: number }[]; ants?: { id: string; at: number; task: string }[] }[] = [],
+  saved: {
+    rows?: { path: string; built?: number }[]
+    ants?: { id: string; at: number; task: string }[]
+    folds?: { id: string; before: number; after?: number; settle?: number }[]
+  }[] = [],
 ) => {
   const clock = mock.clock(on)
-  const latest = { rows: [] as { path: string; built?: number }[], ants: [] as { id: string; at: number; task: string }[], tick: 0, ticks: 0 }
+  const latest = {
+    rows: [] as { path: string; built?: number }[],
+    ants: [] as { id: string; at: number; task: string }[],
+    folds: [] as { id: string; before: number; after?: number; settle?: number }[],
+    tick: 0,
+    ticks: 0,
+  }
   on('state.get', ($, e, next) => {
-    const key = (e as { key?: string }).key as 'rows' | 'ants' | undefined
+    const key = (e as { key?: string }).key as 'rows' | 'ants' | 'folds' | undefined
     const value = key && saved[0]?.[key]
     if (value) {
       delete saved[0]![key]
@@ -106,6 +116,7 @@ const session = async (
     const set = e as { key?: string; value?: unknown }
     if (set.key === 'rows') latest.rows = set.value as typeof latest.rows
     if (set.key === 'ants') latest.ants = set.value as typeof latest.ants
+    if (set.key === 'folds') latest.folds = set.value as typeof latest.folds
     if (set.key === 'tick') {
       latest.tick = set.value as number
       latest.ticks++
@@ -183,4 +194,109 @@ test('resting ants wiggle their antennae while idle, without advancing the simul
   expect(await idles(120 * 20)).toBe(true) // nothing to crawl to: the tick itself never moves
   expect(frameOf()).toBeGreaterThan(before) // but the ant resting in the hole still looks busy
   expect(await pane.find({ text: 'README.md' })).toBeDefined()
+})
+
+test('a Bash call shows the ant busy, not idle, for its duration, and home again once its turn completes', async ($, on) => {
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { latest, idles } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'echo hi', tool_use_id: 'b1' } as never)
+  // Bash has no file path, so no job: the ant is busy, not home, and the call alone
+  // doesn't clear it either — it stays busy until the turn itself ends.
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
+
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(await idles()).toBe(true)
+})
+
+test('turn.step marks the loop busy and passes its chunks through unmodified; turn.complete clears it', async ($, on) => {
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'text', index: 0, text: 'hello' } as never
+    return { turnId: e.turnId, index: e.index, answer: 'hello', toolUses: [] } as never
+  })
+  const { latest } = await session($, on, DIRS, [])
+
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)
+  const chunks: unknown[] = []
+  for await (const c of stream) chunks.push(c)
+  await stream.result
+  expect(chunks).toEqual([{ kind: 'text', index: 0, text: 'hello' }])
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+})
+
+test('a file tool call during an otherwise-busy turn takes over: busy becomes walking', async ($, on) => {
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking')
+  await clock.advance(120 * 30)
+  expect(await pane.find({ text: 'main.ts' })).toBeDefined()
+})
+
+test('agent.spawn marks the spawning ant busy', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'sub1' }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  await $.agent.spawn({ prompt: 'look around' } as never)
+  // the call's own loop (main, with no parentAgentId context from a flat test call) is busy
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
+  expect(latest.ants.find(a => a.id === 'sub1')).toBeDefined()
+})
+
+test('session.compact shows a fold for the compacting id, animates while next(e) is pending, then clears a few ticks after it resolves', async ($, on) => {
+  let resolveCompact: (() => void) | undefined
+  const gate = new Promise<void>(resolve => (resolveCompact = resolve))
+  on('session.compact', async ($, e) => {
+    await gate
+    return { messages: e.messages.slice(3) }
+  })
+  const { clock, latest, idles } = await session($, on, DIRS, [])
+
+  const messages = Array.from({ length: 12 }, () => ({ role: 'user', text: 'x', toolUses: [] })) as never
+  const result = $.session.compact({ trigger: 'manual', messages } as never)
+  await clock.advance(0) // let the hook's own pre-amble (markBusy, publish) land before the gate holds it
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12 })])
+
+  resolveCompact!()
+  await result
+  await clock.advance(0) // let the finally's publish land
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12, after: 9 })])
+
+  // the settled row holds for a few ticks, then disappears, and the clock goes idle again
+  await clock.advance(120 * 10)
+  expect(latest.folds).toEqual([])
+  expect(await idles()).toBe(true)
+})
+
+test('a compaction the engine skipped clears the fold and the busy ant at once, with no settled row ever shown', async ($, on) => {
+  on('session.compact', () => ({ skip: 'nothing worth compacting' }) as never)
+  const { latest } = await session($, on, DIRS, [])
+
+  const messages = Array.from({ length: 5 }, () => ({ role: 'user', text: 'x', toolUses: [] })) as never
+  await $.session.compact({ trigger: 'manual', messages } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(latest.folds.every(f => f.after === f.before)).toBe(true)
+})
+
+test('the clock ticks at full rate while only a busy (no-job) ant exists, not the slow idle wiggle', async ($, on) => {
+  const { clock, latest } = await session($, on, DIRS, [])
+  const before = latest.tick
+
+  const call = $.tool.call({ tool: 'Bash', command: 'sleep 1', tool_use_id: 'b1' } as never)
+  await clock.advance(120 * 5)
+  expect(latest.tick).toBe(before + 5) // step() ran every tick, not the 4-tick idle wiggle
+  await call
 })

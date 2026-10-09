@@ -7,6 +7,8 @@ crawling its branches:
 - **Read / Edit / Grep / Glob**: the ant walks to that file or directory and works on it.
 - **Write to a new file**: the ant walks there and builds the new branch, piece by piece.
 - Ants climb out of the hole on top of the anthill and crawl down its side onto the tree. When the tool call finishes, the ant climbs back up and into the hole, where its antennae peek out until its next job. A subagent's ant leaves the colony when its work is done.
+- **Bash, WebSearch, an MCP tool, or just thinking** (no file to point to): the ant stays inside the mound, shown as a small dot of its own color orbiting the mound's body, so it never looks as idle as a truly resting ant.
+- **`/compact`**: the file tree folds up while the conversation is summarized, then unfurls back once it resolves.
 
 Each agent gets its own **color**. Each model gets its own **body**:
 
@@ -20,7 +22,7 @@ Each agent gets its own **color**. Each model gets its own **body**:
 ## Install
 
 ```
-/plugin install anthill --marketplace <owner>/anthill
+/plugin install anthill --marketplace Lucas-Servi/anthill
 ```
 
 ## Use

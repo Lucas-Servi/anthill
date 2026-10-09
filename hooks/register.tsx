@@ -1,8 +1,22 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ant, Job, Row } from '../types'
-import { HOME, assign, breedOf, colorFor, finish, newAnt, retire, seatPeeks, shiftForInsert, step } from './ants'
+import type { Ant, Fold, Job, Row } from '../types'
+import {
+  HOME,
+  assign,
+  breedOf,
+  clearBusy,
+  colorFor,
+  finish,
+  markBusy,
+  newAnt,
+  retire,
+  seatOrbits,
+  seatPeeks,
+  shiftForInsert,
+  step,
+} from './ants'
 import { compose } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
@@ -12,24 +26,29 @@ const MAIN = 'main'
 // How many idle timer firings between antennae wiggles, while every ant is home and
 // there's nothing to crawl to: a slow idle animation, not the full simulation tick.
 const IDLE_WIGGLE_EVERY = 4
+// How many ticks a resolved compaction's settled "(summarized ...)" row holds before it disappears.
+const SETTLE_TICKS = 6
 
 const rowsAtom = atom({ plugin: 'anthill', key: 'rows' } as const, [] as Row[])
 const antsAtom = atom({ plugin: 'anthill', key: 'ants' } as const, [] as Ant[])
 const tickAtom = atom({ plugin: 'anthill', key: 'tick' } as const, 0)
+const foldsAtom = atom({ plugin: 'anthill', key: 'folds' } as const, [] as Fold[])
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
 let rows: Row[] = []
 let ants: Ant[] = []
 let tick = 0
+let folds: Fold[] = []
 let cwd = ''
 let spawned = 0
 
 const publish = async ($: EngineInterface) => {
-  ants = seatPeeks(ants)
+  ants = seatOrbits(seatPeeks(ants))
   await update($, rowsAtom, () => rows)
   await update($, antsAtom, () => ants)
   await update($, tickAtom, () => tick)
+  await update($, foldsAtom, () => folds)
 }
 
 const antFor = (id: string, label = 'agent', model?: string): Ant => {
@@ -98,8 +117,6 @@ const jobOf = async ($: EngineInterface, e: Record<string, unknown>) => {
   return job
 }
 
-const TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'Glob', 'Grep'])
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
@@ -108,6 +125,9 @@ export const register: Register = on => {
     // Ants saved by older versions sat at -1 for home; home is now inside the summit hole.
     ants = (await read($, antsAtom)).map(a => (a.task === 'home' || a.at < HOME ? { ...a, at: HOME } : a))
     tick = await read($, tickAtom)
+    // A fold left with no `after` means the process died mid-compaction: nothing is
+    // left to resolve it, so it would otherwise sit forever.
+    folds = (await read($, foldsAtom)).filter(f => f.after !== undefined)
     spawned = Math.max(0, ants.length - 1)
     if (rows.length === 0) await listInto($, '', 0)
     if (!ants.some(a => a.id === MAIN)) antFor(MAIN, 'main', await $.session.model())
@@ -118,7 +138,8 @@ export const register: Register = on => {
 
     let idleTicks = 0
     $.clock.every(TICK_MS, () => {
-      const busy = ants.some(a => a.task !== 'home' || a.leaving) || rows.some(r => r.built !== undefined)
+      const busy =
+        ants.some(a => a.task !== 'home' || a.leaving) || rows.some(r => r.built !== undefined) || folds.length > 0
       if (!busy) {
         // Nothing to crawl to: the ants resting in the hole still look busy down
         // there, with a slow antennae wiggle. The simulation tick itself (and
@@ -134,6 +155,9 @@ export const register: Register = on => {
       idleTicks = 0
       tick++
       ;({ ants, rows } = step(ants, rows))
+      folds = folds
+        .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
+        .filter(f => f.settle === undefined || f.settle > 0)
       void publish($)
     })
 
@@ -146,48 +170,85 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    const parent = ants.find(a => a.id === (e.parentAgentId ?? MAIN))
+    if (parent) setAnt(markBusy(parent))
     const started = await next(e)
     if (started.agentId) {
       const ant = antFor(started.agentId, e.subagentType || 'agent', started.model)
       setAnt({ ...ant, label: e.subagentType || ant.label, breed: breedOf(started.model) })
-      await publish($)
     }
+    await publish($)
     return started
   }).catch(($, e, next) => next(e))
 
   on('tool.call', async ($, e, next) => {
-    if (!TOOLS.has(String(e.tool)) || cwd === '') return next(e)
-    const job = await jobOf($, e as unknown as Record<string, unknown>)
-    if (!job) return next(e)
+    if (cwd === '') return next(e)
     const id = e.agentId ?? MAIN
-    setAnt(assign(antFor(id, id === MAIN ? 'main' : 'agent'), job))
+    // jobOf is the gate: a resolvable file/dir path gets the walk-to-file animation;
+    // anything else (Bash, WebSearch, mcp__*, the Agent tool itself, ...) just shows
+    // busy, with no file to point to.
+    const job = await jobOf($, e as unknown as Record<string, unknown>)
+    const ant = antFor(id, id === MAIN ? 'main' : 'agent')
+    setAnt(job ? assign(ant, job) : markBusy(ant))
     await publish($)
     try {
       return await next(e)
     } finally {
-      const ant = ants.find(a => a.id === id)
-      if (ant) setAnt(finish(ant, job.id))
-      await publish($)
+      if (job) {
+        const cur = ants.find(a => a.id === id)
+        if (cur) setAnt(finish(cur, job.id))
+        await publish($)
+      }
+      // A no-job call's busy state stays set until turn.complete, or a later
+      // tool.call on this id brings a real job (assign() takes over at once).
     }
   }).catch(($, e, next) => next(e))
 
+  on('turn.step', async function* ($, e, next) {
+    const id = e.agentId ?? MAIN
+    setAnt(markBusy(antFor(id, id === MAIN ? 'main' : 'agent')))
+    await publish($)
+    return yield* next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
-    if (e.agentId) {
-      const ant = ants.find(a => a.id === e.agentId)
-      if (ant) setAnt(retire(ant))
-    } else {
+    const ant = ants.find(a => a.id === (e.agentId ?? MAIN))
+    if (ant) setAnt(e.agentId ? retire(clearBusy(ant)) : clearBusy(ant))
+    if (!e.agentId) {
       // The person may have switched models with /model.
-      const ant = ants.find(a => a.id === MAIN)
-      if (ant) setAnt({ ...ant, breed: breedOf(await $.session.model()) })
+      const main = ants.find(a => a.id === MAIN)
+      if (main) setAnt({ ...main, breed: breedOf(await $.session.model()) })
     }
     await publish($)
     return ran
   })
 
+  on('session.compact', async ($, e, next) => {
+    const id = e.agentId ?? MAIN
+    const ant = antFor(id, id === MAIN ? 'main' : 'agent')
+    setAnt(markBusy(ant))
+    folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0 }]
+    await publish($)
+    try {
+      const result = await next(e)
+      const before = folds.find(f => f.id === id)?.before ?? e.messages.length
+      const after = result.skip !== undefined ? before : result.messages.length
+      folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS } : f))
+      await publish($)
+      return result
+    } finally {
+      const cur = ants.find(a => a.id === id)
+      if (cur) setAnt(clearBusy(cur))
+      await publish($)
+      // No $.clock.sleep here (it would count against this hook's own budget): the
+      // settled "(summarized ...)" row's countdown is paid for by the tick loop above.
+    }
+  }).catch(($, e, next) => next(e))
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const lines = compose(await read($, rowsAtom), await read($, antsAtom), {
+    const lines = compose(await read($, rowsAtom), await read($, antsAtom), await read($, foldsAtom), {
       width: Math.max(10, e.props.bodyColumns || 40),
       height: Math.max(8, e.props.scroll.bodyRows || 30),
       tick: await read($, tickAtom),

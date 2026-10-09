@@ -1,5 +1,5 @@
 import type { Ant, Breed, Job, Row } from '../types'
-import { HOME, PEEKS, SUMMIT } from './mound'
+import { HOME, ORBIT, ORBIT_SEATS, PEEKS, SUMMIT } from './mound'
 import { BUILD_STEPS, indexOf } from './tree'
 
 export { HOME, TRAIL_STEPS } from './mound'
@@ -44,11 +44,63 @@ export function newAnt(id: string, label: string, breed: Breed, color: string): 
 }
 
 export function assign(ant: Ant, job: Job): Ant {
-  // A home ant sets out from the hole (also fixing ants saved with an older home `at`);
-  // a returning one turns around wherever it is.
-  if (ant.task === 'home') return { ...ant, at: HOME, job, task: 'walking' }
+  // A home or busy ant sets out from the hole at once (a file job always beats the
+  // generic busy-dot; this also fixes ants saved with an older home `at`); a returning
+  // one turns around wherever it is.
+  if (ant.task === 'home' || ant.task === 'busy') {
+    const { busySeat, ...rest } = ant
+    return { ...rest, at: HOME, job, task: 'walking' }
+  }
   if (ant.task === 'returning') return { ...ant, job, task: 'walking' }
   return { ...ant, queue: [...ant.queue, job] }
+}
+
+/** Whether `a`'s dot orbits the mound body: busy, with no file job to point to. */
+export const isBusy = (a: Ant): boolean => a.task === 'busy'
+
+/** Marks a home ant busy (its loop is doing something with no file to point to); a no-op otherwise. */
+export function markBusy(ant: Ant): Ant {
+  return ant.task === 'home' ? { ...ant, task: 'busy' } : ant
+}
+
+/** Reverts a busy ant to resting at home, dropping its orbit seat; a no-op otherwise. */
+export function clearBusy(ant: Ant): Ant {
+  if (ant.task !== 'busy') return ant
+  const { busySeat, ...rest } = ant
+  return { ...rest, task: 'home' }
+}
+
+/** The ORBIT cell a busy ant's dot currently sits on. */
+export function orbitCell(a: Ant): { line: number; col: number } | undefined {
+  if (a.busySeat === undefined) return undefined
+  const spacing = Math.floor(ORBIT.length / ORBIT_SEATS)
+  return ORBIT[(a.busySeat * spacing + a.frame) % ORBIT.length]
+}
+
+/**
+ * Seats busy ants on ORBIT exactly as seatPeeks seats home ants on PEEKS: a seat held
+ * for as long as the ant stays busy, so one leaving never makes another's dot jump.
+ */
+export function seatOrbits(ants: Ant[]): Ant[] {
+  const held = new Set<number>()
+  const kept = ants.map((a): Ant => {
+    if (a.busySeat === undefined) return a
+    if (isBusy(a) && a.busySeat < ORBIT_SEATS && !held.has(a.busySeat)) {
+      held.add(a.busySeat)
+      return a
+    }
+    const { busySeat, ...rest } = a
+    return rest
+  })
+  return kept.map((a): Ant => {
+    if (a.busySeat !== undefined || !isBusy(a)) return a
+    for (let seat = 0; seat < ORBIT_SEATS; seat++) {
+      if (held.has(seat)) continue
+      held.add(seat)
+      return { ...a, busySeat: seat }
+    }
+    return a // more busy ants than seats (ORBIT_SEATS): stays undotted rather than overlapping
+  })
 }
 
 /** Pulls the next queued job into `job`, or heads the ant home. */
@@ -146,8 +198,8 @@ function holdsBack(ants: Ant[], at: number): boolean {
 }
 
 export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
-  // seat ants still in the hole before any leaves it, so the rest keep the seats they're drawn in
-  const ants = seatPeeks(given)
+  // seat ants still in the hole (or orbiting it) before any leaves, so the rest keep the seats they're drawn in
+  const ants = seatOrbits(seatPeeks(given))
   let nextRows = rows
   const nextAnts: Ant[] = []
   /** Where each of nextAnts stood before this tick. */
@@ -166,6 +218,13 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
 
     if (ant.task === 'home') {
       if (ant.leaving) continue // removed
+      keep(ant)
+      continue
+    }
+
+    if (ant.task === 'busy') {
+      // orbiting the mound body, not on the trail or the tree: nothing to move,
+      // just keep it (its dot's position is derived from `frame`, already advanced above)
       keep(ant)
       continue
     }
@@ -245,7 +304,7 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
   }
 
   const settled = keepApart(nextAnts, from)
-  const seated = seatPeeks(settled)
+  const seated = seatOrbits(seatPeeks(settled))
   return { ants: seated, rows: dropOrphanBuilds(nextRows, seated) }
 }
 
@@ -302,9 +361,12 @@ export function shiftForInsert(ants: Ant[], index: number, count = 1): Ant[] {
   return ants.map((a) => (a.at >= index ? { ...a, at: a.at + count } : a))
 }
 
-/** Whether an ant is inside the hole: at home, or sent out but not yet climbing. */
+/**
+ * Whether an ant is inside the hole: at home, or sent out but not yet climbing.
+ * A busy ant sits at HOME too, but orbits the mound body instead — never the hole.
+ */
 export function inHole(a: Ant): boolean {
-  return a.task === 'home' || a.at <= HOME
+  return a.task !== 'busy' && (a.task === 'home' || a.at <= HOME)
 }
 
 /**

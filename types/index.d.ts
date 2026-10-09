@@ -18,7 +18,7 @@ export type Row = {
   built?: number
 }
 
-export type Task = 'home' | 'walking' | 'working' | 'building' | 'returning'
+export type Task = 'home' | 'walking' | 'working' | 'building' | 'returning' | 'busy'
 
 /** One piece of work: a tool call on a path. */
 export type Job = {
@@ -53,8 +53,29 @@ export type Ant = {
   frame: number
   /** Which of the hole's peek slots (mound.ts PEEKS) its antennae hold while it is in the hole. */
   peek?: number
+  /** Which of the mound's orbit seats (mound.ts ORBIT) its dot holds while `task` is `'busy'`. */
+  busySeat?: number
   /** Remove the ant once it is back home (its subagent finished). */
   leaving?: boolean
+}
+
+/**
+ * One conversation being compacted, shown as the tree folding instead of its
+ * real rows for as long as it runs; `rows` itself is never touched by this.
+ */
+export type Fold = {
+  /** Whose conversation: an ant id, `main` included. */
+  id: string
+  /** The ant's label when compaction began, shown in the fold's header. */
+  label: string
+  /** Message count before compaction. */
+  before: number
+  /** Message count after; absent while compaction still runs. */
+  after?: number
+  /** Animation frame, advanced by the same tick loop that steps the ants. */
+  frame: number
+  /** Ticks left to show the "(summarized ... )" row before it disappears. */
+  settle?: number
 }
 
 declare module 'claude-code' {
@@ -64,6 +85,7 @@ declare module 'claude-code' {
       ants: Ant[]
       /** Global animation tick. */
       tick: number
+      folds: Fold[]
     }
   }
 }

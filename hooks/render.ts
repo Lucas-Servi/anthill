@@ -1,4 +1,4 @@
-import type { Row, Ant, Task, Breed } from '../types'
+import type { Row, Ant, Task, Breed, Fold } from '../types'
 import {
   HOLE,
   MOUND,
@@ -11,7 +11,7 @@ import {
   glyphStart,
   trailIndex,
 } from './mound'
-import { inHole, seatPeeks } from './ants'
+import { inHole, orbitCell, seatPeeks } from './ants'
 import { branchPrefixes, isBuilt } from './tree'
 
 /** A run of text in one style. `bg` is a background color (the hole's, under anything drawn on it). */
@@ -120,7 +120,8 @@ export const antGlyph = (breed: Breed, task: Task, frame: number): string => {
   const parity = frame % 2
   if (task === 'returning') return pick(WALK[breed], 1 - parity)
   if (task === 'working' || task === 'building') return pick(WORK[breed], parity)
-  // 'walking' and 'home' both face down the tree
+  // 'walking', 'home' and 'busy' (shown as a dot on the mound, not on the trail: only
+  // the legend ever draws its glyph) all face down the tree
   return pick(WALK[breed], parity)
 }
 
@@ -230,8 +231,20 @@ const moundLines = (ants: Ant[], tick: number): Line[] => {
     }
   })
 
+  // busy ants (no file to point to), as a dot orbiting the mound body. seatOrbits
+  // already keeps their seats spaced apart, so unlike the trail no two can ever land
+  // on the same cell here.
+  for (const a of ants) {
+    const cell = orbitCell(a)
+    const row = cell && cells[cell.line]
+    if (cell && row) paint(row, cell.col, ORBIT_DOT, a.color)
+  }
+
   return cells.map(toLine)
 }
+
+/** A busy ant's dot, orbiting inside the mound while it has no file to point to. */
+const ORBIT_DOT = '•'
 
 /** Columns `start` (inclusive) to `end` (exclusive) of one mound line, held by an ant. */
 type Span = { start: number; end: number }
@@ -252,11 +265,34 @@ const freeStart = (spans: Span[], want: number, width: number): number => {
   return x
 }
 
-export const compose = (rows: Row[], ants: Ant[], opts: Opts): Line[] => {
+/** How many ticks between fold stages shrinking by one branch. */
+const FOLD_STAGE_TICKS = 3
+
+/**
+ * One compaction's block: while it runs, a small generic tree (sized only by how many
+ * messages there were, never their content — that's private) collapsing branch by
+ * branch; once resolved, a single settled row for `f.settle` ticks, then gone.
+ */
+const foldLines = (f: Fold, indent: string): Line[] => {
+  const header: Line = [{ text: `${indent}${f.label} folding its memory…`, dim: true }]
+  if (f.after !== undefined) {
+    return [header, [{ text: `${indent}└── (summarized, ${f.before} → ${f.after})`, dim: true }]]
+  }
+  const branches = Math.min(3, Math.max(1, f.before))
+  const open = Math.max(1, branches - Math.floor(f.frame / FOLD_STAGE_TICKS))
+  const body = Array.from({ length: open }, (_, i): Line => [
+    { text: `${indent}${i === open - 1 ? '└── ' : '├── '}…`, dim: true },
+  ])
+  return [header, ...body]
+}
+
+export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Line[] => {
   const { width, height } = opts
 
   // -- mound block --
   const mound = moundLines(ants, opts.tick)
+  const indent = ' '.repeat(TREE_INDENT)
+  const foldBlock: Line[] = folds.flatMap(f => foldLines(f, indent))
 
   // -- legend block --
   const legendItems = ants.map(a => ({
@@ -286,7 +322,6 @@ export const compose = (rows: Row[], ants: Ant[], opts: Opts): Line[] => {
 
   // -- tree rows --
   const prefixes = branchPrefixes(rows)
-  const indent = ' '.repeat(TREE_INDENT)
   const byRow = new Map<number, Ant[]>()
   for (const a of ants) {
     if (inHole(a) || a.at < 0) continue
@@ -323,8 +358,8 @@ export const compose = (rows: Row[], ants: Ant[], opts: Opts): Line[] => {
     return line
   })
 
-  // -- viewport: fit mound + legend + tree into height --
-  const reserved = mound.length + legend.length
+  // -- viewport: fit mound + fold + legend + tree into height --
+  const reserved = mound.length + foldBlock.length + legend.length
   const room = Math.max(0, height - reserved)
 
   if (treeLines.length > room) {
@@ -358,8 +393,8 @@ export const compose = (rows: Row[], ants: Ant[], opts: Opts): Line[] => {
     if (top) out.push([{ text: `${indent}… ${start} more`, dim: true }])
     out.push(...treeLines.slice(start, end))
     if (bottom) out.push([{ text: `${indent}… ${treeLines.length - end} more`, dim: true }])
-    return [...mound, ...out, ...legend].map(l => clipLine(l, width)).slice(0, height)
+    return [...mound, ...foldBlock, ...out, ...legend].map(l => clipLine(l, width)).slice(0, height)
   }
 
-  return [...mound, ...treeLines, ...legend].map(l => clipLine(l, width)).slice(0, height)
+  return [...mound, ...foldBlock, ...treeLines, ...legend].map(l => clipLine(l, width)).slice(0, height)
 }

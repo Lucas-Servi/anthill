@@ -1,8 +1,27 @@
 import { test, expect } from 'claude-code/testing'
 import type { Ant, Row } from '../types'
 import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, isBuilt, relativize, BUILD_STEPS } from './tree'
-import { breedOf, newAnt, assign, finish, retire, step, shiftForInsert, colorFor, PALETTE, HOME, TRAIL_STEPS, seatPeeks } from './ants'
-import { SUMMIT, TRAIL } from './mound'
+import {
+  breedOf,
+  newAnt,
+  assign,
+  finish,
+  retire,
+  step,
+  shiftForInsert,
+  colorFor,
+  PALETTE,
+  HOME,
+  TRAIL_STEPS,
+  seatPeeks,
+  isBusy,
+  markBusy,
+  clearBusy,
+  orbitCell,
+  seatOrbits,
+  inHole,
+} from './ants'
+import { SUMMIT, TRAIL, ORBIT, ORBIT_SEATS } from './mound'
 
 /** Runs one tick on a single ant, unwrapping the (always non-empty) result. */
 function tick(ant: Ant, rows: Row[]): [Ant, Row[]] {
@@ -619,4 +638,93 @@ test('step keeps every home ant on its peek seat when an earlier ant is removed 
   expect(seat('plan')).toBe(2)
   expect(seat('main')).toBeUndefined()
   expect([0, 1]).toContain(seat('review'))
+})
+
+test('markBusy sets a home ant busy; is a no-op on every other task', () => {
+  const home = newAnt('1', 'main', 'other', '#fff')
+  const busy = markBusy(home)
+  expect(busy.task).toBe('busy')
+  expect(isBusy(busy)).toBe(true)
+  expect(isBusy(home)).toBe(false)
+
+  for (const task of ['walking', 'working', 'building', 'returning', 'busy'] as const) {
+    const ant = { ...home, task }
+    expect(markBusy(ant)).toBe(ant) // same reference: a true no-op
+  }
+})
+
+test('clearBusy reverts a busy ant to home and drops its busySeat; is a no-op otherwise', () => {
+  const busy = { ...markBusy(newAnt('1', 'main', 'other', '#fff')), busySeat: 2 }
+  const cleared = clearBusy(busy)
+  expect(cleared.task).toBe('home')
+  expect(cleared.busySeat).toBeUndefined()
+
+  for (const task of ['home', 'walking', 'working', 'building', 'returning'] as const) {
+    const ant = { ...busy, task }
+    expect(clearBusy(ant)).toBe(ant)
+  }
+})
+
+test('assign on a busy ant starts it walking at once, dropping its busySeat', () => {
+  const busy = { ...markBusy(newAnt('1', 'main', 'other', '#fff')), busySeat: 1 }
+  const ant = assign(busy, { id: 'j', path: 'a.ts', kind: 'work' })
+  expect(ant.task).toBe('walking')
+  expect(ant.at).toBe(HOME)
+  expect(ant.busySeat).toBeUndefined()
+  expect(ant.job?.path).toBe('a.ts')
+})
+
+test('step keeps a busy ant busy across ticks (it never falls through to the returning branch)', () => {
+  const rows: Row[] = []
+  let ant = markBusy(newAnt('1', 'main', 'other', '#fff'))
+  for (let i = 0; i < 10; i++) {
+    ;[ant, ] = tick(ant, rows)
+    expect(ant.task).toBe('busy')
+    expect(ant.at).toBe(HOME)
+  }
+})
+
+test('inHole excludes a busy ant even though its at is HOME', () => {
+  const home = newAnt('1', 'main', 'other', '#fff')
+  expect(inHole(home)).toBe(true)
+  expect(inHole(markBusy(home))).toBe(false)
+})
+
+test('orbitCell cycles through all of ORBIT over ORBIT.length ticks, offset by busySeat', () => {
+  const ant = { ...markBusy(newAnt('1', 'main', 'other', '#fff')), busySeat: 0 }
+  const seen = new Set<string>()
+  for (let f = 0; f < ORBIT.length; f++) {
+    const cell = orbitCell({ ...ant, frame: f })
+    expect(cell).toBeDefined()
+    seen.add(`${cell!.line},${cell!.col}`)
+  }
+  expect(seen.size).toBe(ORBIT.length)
+  expect(orbitCell(newAnt('1', 'main', 'other', '#fff'))).toBeUndefined() // no busySeat: no dot
+})
+
+test('two busy ants on any pair of seats never share an ORBIT cell, at any frame', () => {
+  for (let s1 = 0; s1 < ORBIT_SEATS; s1++) {
+    for (let s2 = 0; s2 < ORBIT_SEATS; s2++) {
+      if (s1 === s2) continue
+      for (let f = 0; f < ORBIT.length; f++) {
+        const a = orbitCell({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: s1, frame: f })!
+        const b = orbitCell({ ...markBusy(newAnt('b', 'b', 'other', '#fff')), busySeat: s2, frame: f })!
+        expect(a.line === b.line && a.col === b.col).toBe(false)
+      }
+    }
+  }
+})
+
+test('seatOrbits seats busy ants on ORBIT like seatPeeks seats home ants on PEEKS: stable, no overlap, freed on release', () => {
+  let ants = seatOrbits(['a', 'b', 'c'].map((id, i) => markBusy(newAnt(id, id, 'other', colorFor(i)))))
+  expect(ants.map(a => a.busySeat)).toEqual([0, 1, 2])
+
+  // 'a' stops being busy and is dropped from the list: 'b' keeps its seat, no jump
+  ants = seatOrbits(ants.filter(a => a.id !== 'a'))
+  expect(ants.find(a => a.id === 'b')!.busySeat).toBe(1)
+  expect(ants.find(a => a.id === 'c')!.busySeat).toBe(2)
+
+  // a newcomer takes the freed seat 0
+  ants = seatOrbits([...ants, markBusy(newAnt('d', 'd', 'other', colorFor(3)))])
+  expect(ants.find(a => a.id === 'd')!.busySeat).toBe(0)
 })

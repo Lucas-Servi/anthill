@@ -100,6 +100,29 @@ export const PEEKS: { line: number; col: number }[] = [
   { line: 2, col: 9 },
 ]
 
+/**
+ * A small loop inside the mound's shaded body, where a busy ant's dot orbits
+ * while it has no file to point to: clear of the trail, the peek slots, the
+ * hole and the sparkle line (verified against MOUND/MOUND_MASK directly).
+ */
+export const ORBIT: { line: number; col: number }[] = [
+  { line: 3, col: 7 },
+  { line: 3, col: 8 },
+  { line: 3, col: 9 },
+  { line: 3, col: 10 },
+  { line: 3, col: 11 },
+  { line: 3, col: 12 },
+  { line: 4, col: 12 },
+  { line: 4, col: 11 },
+  { line: 4, col: 10 },
+  { line: 4, col: 9 },
+  { line: 4, col: 8 },
+  { line: 4, col: 7 },
+]
+
+/** How many busy ants can orbit at once, evenly spaced so their dots never coincide. */
+export const ORBIT_SEATS = 6
+
 /** The trail point index for an `Ant.at`, or undefined when the ant is in the hole or on the tree. */
 export const trailIndex = (at: number): number | undefined =>
   at > HOME && at < 0 ? at + TRAIL_STEPS : undefined
