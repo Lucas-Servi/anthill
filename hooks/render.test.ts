@@ -1,18 +1,23 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { MOUND, PEEK, antGlyph, workFx, compose, lineText, type Line } from './render'
+import { MOUND, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
 import {
   GROWTH,
   GROWTH_STAGES,
   HOLE,
   HOME,
   H_GROWTH,
+  H_HOLE,
   H_MOUND,
   H_MOUND_MASK,
+  H_PEEKS,
+  H_SPARKLE_LINE,
   H_SUMMIT,
   H_TRAIL,
   H_TRAIL_STEPS,
+  H_TUNNEL,
+  SHAPES,
   MOUND_MASK,
   MOUND_PALETTE,
   PEEKS,
@@ -23,6 +28,8 @@ import {
   TREE_INDENT,
   TUNNEL,
   glyphStart,
+  stageOf,
+  type MoundShape,
 } from './mound'
 
 const BREEDS: Breed[] = ['haiku', 'sonnet', 'opus', 'fable', 'other']
@@ -587,11 +594,14 @@ test('two busy ants, seated on different seats, draw two distinct colored dots a
   expect(found[0]!.line === found[1]!.line && found[0]!.col === found[1]!.col).toBe(false)
 })
 
-test('cells a busy ant\'s dot has passed stay dug (a dark "·"), under the dot itself where it currently sits', () => {
+test('cells a busy ant\'s dot has passed stay dug, drawn as that cell\'s own sprite, under the dot where it currently sits', () => {
   const busy = { ...seatOrbits([markBusy(ant({ color: '#5f87ff' }))])[0]!, frame: 4 }
   const dugCell = TUNNEL[0]! // seat 0, frame 0: the ant started here before reaching frame 4
-  const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 0, dug: [0] })
-  expect(lineText(lines[dugCell.line]!)[dugCell.col]).toBe('·')
+  const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 50, dug: [{ i: 0, at: 0 }] })
+  const drawn = cells(lines[dugCell.line])[dugCell.col]!
+  const sprite = dugSprite(0, 50)
+  expect(drawn.ch).toBe(sprite.ch)
+  expect(drawn.color).toBe(sprite.color)
 })
 
 test('a busy ant that gets a real file job stops digging and starts walking that same tick', () => {
@@ -761,4 +771,131 @@ test('GROWTH and H_GROWTH both keep every stage the same number of lines as stag
       expect(mask.length).toBe(stages[0]!.mask.length)
     }
   }
+})
+
+/** Every cell of `shape`'s base picture something but the tunnel addresses: trail, peeks, hole, sparkle line. */
+const protectedCells = (shape: MoundShape): { line: number; col: number }[] => [
+  ...shape.trail,
+  ...shape.peeks,
+  ...Array.from({ length: shape.hole.end - shape.hole.start + 1 }, (_, k) => ({ line: shape.hole.line, col: shape.hole.start + k })),
+  ...Array.from(shape.mound[shape.sparkleLine]!, (_, col) => ({ line: shape.sparkleLine, col })),
+]
+const at = (lines: string[], line: number, col: number) => Array.from(lines[line] ?? '')[col]
+
+test('every growth stage keeps the trail, peeks, hole, sparkle line and base tunnel cells exactly as the base picture has them', () => {
+  for (const shape of [SHAPES.vertical, SHAPES.horizontal]) {
+    const base = shape.stages[0]!
+    for (const stage of shape.stages) {
+      for (const p of [...protectedCells(shape), ...shape.tunnel]) {
+        expect(at(stage.mound, p.line, p.col)).toBe(at(base.mound, p.line, p.col))
+        expect(at(stage.mask, p.line, p.col)).toBe(at(base.mask, p.line, p.col))
+      }
+    }
+  }
+})
+
+test('every growth stage\'s picture and mask line up cell for cell, with only known palette keys', () => {
+  for (const shape of [SHAPES.vertical, SHAPES.horizontal]) {
+    for (const { mound, mask } of shape.stages) {
+      mound.forEach((line, i) => {
+        const chars = Array.from(line)
+        const keys = Array.from(mask[i]!)
+        expect(keys.length).toBe(chars.length)
+        chars.forEach((ch, c) => {
+          expect(keys[c] === ' ').toBe(ch === ' ')
+          if (ch !== ' ') expect(MOUND_PALETTE[keys[c]!] !== undefined).toBe(true)
+        })
+      })
+    }
+  }
+})
+
+test('the mound grows a little at every stage, never shrinks, and stays narrow enough for a docked pane', () => {
+  for (const shape of [SHAPES.vertical, SHAPES.horizontal]) {
+    const cellCount = (lines: string[]) => lines.join('').replace(/ /g, '').length
+    for (let n = 1; n < shape.stages.length; n++) {
+      expect(shape.stages[n]!.mound.join('\n')).not.toBe(shape.stages[n - 1]!.mound.join('\n'))
+      expect(cellCount(shape.stages[n]!.mound)).toBeGreaterThanOrEqual(cellCount(shape.stages[n - 1]!.mound))
+    }
+  }
+  const widest = (lines: string[]) => Math.max(...lines.map(l => Array.from(l).length))
+  expect(widest(GROWTH.at(-1)!.mound)).toBeLessThanOrEqual(30)
+  expect(widest(H_GROWTH.at(-1)!.mound)).toBeLessThanOrEqual(36)
+})
+
+test('a grown stage\'s tunnel goes on from the base route into the hump, one touching step at a time, and only grows', () => {
+  for (const shape of [SHAPES.vertical, SHAPES.horizontal]) {
+    let prev = shape.tunnel
+    for (const stage of shape.stages) {
+      const route = stage.tunnel
+      // starts with the previous stage's whole route, unchanged: a dug index keeps its cell
+      expect(route.slice(0, prev.length)).toEqual(prev)
+      const seen = new Set<string>()
+      route.forEach((p, k) => {
+        expect(at(stage.mask, p.line, p.col) ?? ' ').not.toBe(' ') // on the mound, never off it
+        seen.add(`${p.line},${p.col}`)
+        if (k > 0) expect(Math.abs(p.line - route[k - 1]!.line) + Math.abs(p.col - route[k - 1]!.col)).toBe(1)
+      })
+      expect(seen.size).toBe(route.length)
+      prev = route
+    }
+    // the fully grown mound's tunnel reaches past the base picture's right edge, into the hump
+    const baseWidth = Math.max(...shape.stages[0]!.mound.slice(1, -1).map(l => Array.from(l).length))
+    expect(Math.max(...shape.stages.at(-1)!.tunnel.map(p => p.col))).toBeGreaterThanOrEqual(baseWidth - 1)
+  }
+})
+
+test('H_TUNNEL avoids the trail, peeks, hole and sparkle line; only the grown route crosses the trail, at one point', () => {
+  const blocked = new Set([...H_TRAIL, ...H_PEEKS].map(p => `${p.line},${p.col}`))
+  for (let c = H_HOLE.start; c <= H_HOLE.end; c++) blocked.add(`${H_HOLE.line},${c}`)
+  for (const p of H_TUNNEL) {
+    expect(p.line).not.toBe(H_SPARKLE_LINE)
+    expect(blocked.has(`${p.line},${p.col}`)).toBe(false)
+  }
+  const crossings = H_GROWTH.at(-1)!.tunnel.filter(p => blocked.has(`${p.line},${p.col}`))
+  expect(crossings).toEqual([{ line: 3, col: 12 }])
+})
+
+test('a dug cell is never drawn blank: a passage, chamber, root or fungus, the same kind every time for the same index', () => {
+  const kinds = new Set<string>()
+  for (let i = 0; i < 60; i++) {
+    const a = dugSprite(i, 0)
+    expect(a.ch.trim()).not.toBe('')
+    expect(dugSprite(i, 0)).toEqual(a)
+    kinds.add(dugSprite(i, 1000).ch)
+  }
+  expect(kinds.size).toBeGreaterThanOrEqual(4) // passages, chambers, roots and grown fungi all show up
+})
+
+test('a fungus grows the longer its tunnel has been dug: spore, sprout, stalk, cap, each in its own color', () => {
+  const fungus = Array.from({ length: 200 }, (_, i) => i).find(i => dugSprite(i, 1000).ch === 'τ')
+  expect(fungus).toBeDefined()
+  const frames = [0, 15, 40, 80, 140].map(age => dugSprite(fungus!, age).ch)
+  expect(new Set(frames).size).toBe(frames.length)
+  expect(frames.at(-1)).toBe('τ')
+})
+
+test('a cell dug further along a bigger mound\'s route isn\'t drawn once the mound is smaller again', () => {
+  const grown = GROWTH.at(-1)!.tunnel
+  const far = grown.length - 1 // only on the grown route
+  const small = compose(TREE, [], [], { width: 60, height: 20, tick: 500, growth: 0, dug: [{ i: far, at: 0 }] })
+  const big = compose(TREE, [], [], { width: 60, height: 30, tick: 500, growth: GROWTH.length - 1, dug: [{ i: far, at: 0 }] })
+  const cell = grown[far]!
+  expect(cells(big[cell.line])[cell.col]!.ch).toBe(dugSprite(far, 500).ch)
+  // the small mound shows its own picture there (nothing, or the base cell), not the dug sprite
+  expect(cells(small[cell.line])[cell.col]?.ch).toBe(at(GROWTH[0]!.mound, cell.line, cell.col))
+})
+
+test('compose leaves the legend out when asked to; legendLines draws it on its own, for the strip\'s button row', () => {
+  const ants: Ant[] = [ant({ id: 'main', label: 'main', breed: 'opus', task: 'working', at: 0 })]
+  const without = compose(TREE, ants, [], { width: 80, height: 20, tick: 0, legend: false })
+  expect(without.some(l => lineText(l).includes('main (opus)'))).toBe(false)
+  expect(lineText(legendLines(ants, 80, 0)[0]!)).toContain('main (opus)')
+})
+
+test('stageOf clamps a stage out of range, or not a whole number, to a real one', () => {
+  const shape = SHAPES.vertical
+  expect(stageOf(shape, -3)).toBe(shape.stages[0])
+  expect(stageOf(shape, 999)).toBe(shape.stages.at(-1))
+  expect(stageOf(shape, Number.NaN)).toBe(shape.stages[0])
 })

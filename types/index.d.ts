@@ -86,6 +86,13 @@ export type Fold = {
   settle?: number
 }
 
+/**
+ * A tunnel cell some busy ant's dot has dug through: its index along the route
+ * (mound.ts TUNNEL/H_TUNNEL, or a grown stage's longer route), and the tick it was dug at,
+ * so what grows there (a fungus, say) can age.
+ */
+export type Dug = { i: number; at: number }
+
 /** Where the anthill is drawn: the usual docked/inline pane, or the strip above the prompt. */
 export type Layout = 'side' | 'strip'
 
@@ -101,8 +108,8 @@ declare module 'claude-code' {
       layout: Layout
       /** The mound's growth stage: how full the context window was, last measured. */
       growth: number
-      /** Tunnel cell indices (mound.ts TUNNEL/H_TUNNEL) some busy ant has already dug through. */
-      dug: number[]
+      /** Tunnel cells some busy ant has already dug through. */
+      dug: Dug[]
     }
   }
 }

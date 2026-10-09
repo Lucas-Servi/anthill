@@ -1,6 +1,6 @@
 {
   "name": "anthill",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "An ASCII ant colony crawls your file tree: one ant per agent, working on the files they touch",
   "types": "./types/index.d.ts"
 }

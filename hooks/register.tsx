@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ant, Fold, Job, Layout, Row } from '../types'
+import type { Ant, Dug, Fold, Job, Layout, Row } from '../types'
 import {
   HOME,
   assign,
@@ -18,8 +18,8 @@ import {
   shiftForInsert,
   step,
 } from './ants'
-import { GROWTH_STAGES, TUNNEL_LENGTH, stageFor } from './mound'
-import { compose } from './render'
+import { GROWTH_STAGES, SHAPES, stageFor, stageOf } from './mound'
+import { compose, legendLines, type Line } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -39,7 +39,7 @@ const tickAtom = atom({ plugin: 'anthill', key: 'tick' } as const, 0)
 const foldsAtom = atom({ plugin: 'anthill', key: 'folds' } as const, [] as Fold[])
 const layoutAtom = atom({ plugin: 'anthill', key: 'layout' } as const, 'side' as Layout)
 const growthAtom = atom({ plugin: 'anthill', key: 'growth' } as const, 0)
-const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as number[])
+const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as Dug[])
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
@@ -53,7 +53,7 @@ let layout: Layout = 'side'
 /** How full the mound is drawn: a growth stage, 0..GROWTH_STAGES - 1. */
 let growth = 0
 /** Tunnel cells some busy ant's dot has already dug through. */
-let dug: number[] = []
+let dug: Dug[] = []
 /** Context tokens at which the mound reaches its last stage; read once at session.start. */
 let growthThreshold = Infinity
 
@@ -164,7 +164,10 @@ export const register: Register = on => {
     // A fold left with no `after` means the process died mid-compaction: nothing is
     // left to resolve it, so it would otherwise sit forever.
     folds = (await read($, foldsAtom)).filter(f => f.after !== undefined)
-    dug = await read($, dugAtom)
+    // 0.3.0 saved a bare index per dug cell; it gets the current tick as when it was dug.
+    dug = ((await read($, dugAtom)) as unknown[]).flatMap((d): Dug[] =>
+      typeof d === 'number' ? [{ i: d, at: tick }] : d && typeof d === 'object' ? [d as Dug] : [],
+    )
     growth = await read($, growthAtom)
     // $.store, not just $.state, since this is the one thing meant to outlive the
     // session itself (a /clear, a brand-new session): fall back to the atom (an older
@@ -214,7 +217,9 @@ export const register: Register = on => {
       idleTicks = 0
       tick++
       ;({ ants, rows } = step(ants, rows))
-      dug = dig(dug, ants, TUNNEL_LENGTH)
+      // dig along the route of the mound as it's drawn now: a grown one's runs into its hump
+      const route = stageOf(SHAPES[layout === 'strip' ? 'horizontal' : 'vertical'], growth).tunnel
+      dug = dig(dug, ants, route.length, tick)
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         .filter(f => f.settle === undefined || f.settle > 0)
@@ -375,7 +380,17 @@ export const register: Register = on => {
           </Text>
         ))}
         <Box justifyContent="flex-end">
-          <Button key="to-strip" plain dimColor hotkey="h" label="▬ strip" onPress={() => setLayout($, 'strip')} />
+          <Button
+            key="to-strip"
+            plain
+            dimColor
+            hotkey="h"
+            label="▬ strip"
+            onPress={() => {
+              setLayout($, 'strip')
+              void $.ui.close({ id: PANE })
+            }}
+          />
         </Box>
       </Box>
     )
@@ -392,15 +407,19 @@ export const register: Register = on => {
     const main = readAnts.find(a => a.id === MAIN)
     const width = Math.max(10, e.props.bodyColumns || 40)
     const height = Math.max(3, Math.min(e.props.maxRows, STRIP_MAX_ROWS) - 1) // one row held for the button
+    const tickNow = await read($, tickAtom)
     const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
       width,
       height,
-      tick: await read($, tickAtom),
+      tick: tickNow,
       mainRow: main && main.at >= 0 ? main.at : undefined,
       orientation: 'horizontal',
       growth: await read($, growthAtom),
       dug: await read($, dugAtom),
+      legend: false, // drawn beside the button below instead, so it never costs the strip a row
     })
+    // the legend's first line, leaving the button room at the row's end
+    const legendRow: Line = legendLines(readAnts, Math.max(10, width - 12), tickNow)[0] ?? []
 
     return (
       <Box flexDirection="column">
@@ -413,7 +432,14 @@ export const register: Register = on => {
             ))}
           </Text>
         ))}
-        <Box justifyContent="flex-end">
+        <Box justifyContent="space-between">
+          <Text wrap="truncate-end">
+            {legendRow.map(seg => (
+              <Text color={seg.color} dimColor={seg.dim}>
+                {seg.text}
+              </Text>
+            ))}
+          </Text>
           <Button
             key="to-side"
             plain

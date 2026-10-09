@@ -748,17 +748,22 @@ test('two busy ants on different seats usually sit on different tunnel cells, th
   expect(coincided).toBeGreaterThan(0) // the varied motion is expected to let two dots cross
 })
 
-test('dig records every busy ant\'s current tunnel index, deduplicated and sorted, ignoring non-busy ants', () => {
+test('dig records every busy ant\'s current tunnel cell with the tick it was dug, sorted, ignoring non-busy ants', () => {
   const busyAt = (seat: number, frame: number): Ant => ({ ...markBusy(newAnt('a', 'a', 'other', '#fff')), busySeat: seat, frame })
   const walking: Ant = { ...newAnt('b', 'b', 'other', '#fff'), task: 'walking', at: 0 }
   const i0 = tunnelIndex(busyAt(0, 0), TUNNEL.length)!
   const i2 = tunnelIndex(busyAt(2, 0), TUNNEL.length)!
-  const dug = dig([], [busyAt(0, 0), busyAt(2, 0), walking], TUNNEL.length)
-  expect(dug).toEqual([i0, i2].sort((a, b) => a - b))
-  // digging again at the same spot doesn't duplicate; a new spot is added, kept sorted
+  const dug = dig([], [busyAt(0, 0), busyAt(2, 0), walking], TUNNEL.length, 7)
+  expect(dug).toEqual([i0, i2].sort((a, b) => a - b).map(i => ({ i, at: 7 })))
+  // digging again at a spot keeps the tick it was first dug at (so what grows there ages);
+  // a new spot is added at the new tick, kept sorted
   const i1 = tunnelIndex(busyAt(1, 0), TUNNEL.length)!
-  const more = dig(dug, [busyAt(0, 0), busyAt(1, 0)], TUNNEL.length)
-  expect(more).toEqual([...new Set([i0, i1, i2])].sort((a, b) => a - b))
+  const more = dig(dug, [busyAt(0, 0), busyAt(1, 0)], TUNNEL.length, 30)
+  expect(more.map(d => d.i)).toEqual([...new Set([i0, i1, i2])].sort((a, b) => a - b))
+  expect(more.find(d => d.i === i0)?.at).toBe(7)
+  if (i1 !== i0 && i1 !== i2) expect(more.find(d => d.i === i1)?.at).toBe(30)
+  // nothing new dug: the very same list comes back (no needless state write)
+  expect(dig(more, [busyAt(0, 0)], TUNNEL.length, 31)).toBe(more)
 })
 
 test('stageFor spreads a 0..1 fill evenly across the stages, 0 for an unmeasured or non-positive fill', () => {

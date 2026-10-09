@@ -1,4 +1,4 @@
-import type { Ant, Breed, Job, Row } from '../types'
+import type { Ant, Breed, Dug, Job, Row } from '../types'
 import { HOME, PEEKS, SUMMIT, TUNNEL_SEATS } from './mound'
 import { BUILD_STEPS, indexOf } from './tree'
 
@@ -128,14 +128,18 @@ export function seatOrbits(ants: Ant[]): Ant[] {
   })
 }
 
-/** Every tunnel index a busy ant currently sits on, added to `dug` (sorted, deduplicated). */
-export function dig(dug: number[], ants: Ant[], length: number): number[] {
-  const set = new Set(dug)
+/**
+ * Every tunnel cell a busy ant currently sits on, added to `dug` at tick `tick` (sorted by
+ * index; a cell dug before keeps the tick it was first dug at, so what grows there ages).
+ */
+export function dig(dug: Dug[], ants: Ant[], length: number, tick: number): Dug[] {
+  const byIndex = new Map(dug.map(d => [d.i, d] as const))
   for (const a of ants) {
     const i = tunnelIndex(a, length)
-    if (i !== undefined) set.add(i)
+    if (i !== undefined && !byIndex.has(i)) byIndex.set(i, { i, at: tick })
   }
-  return [...set].sort((x, y) => x - y)
+  if (byIndex.size === dug.length) return dug
+  return [...byIndex.values()].sort((x, y) => x.i - y.i)
 }
 
 /** Clears `climbDepth` outright: the ant is standing on its row, not transiting. */

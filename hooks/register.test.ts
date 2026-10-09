@@ -1,5 +1,5 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
-import { GROWTH_STAGES, HOME, stageFor } from './mound'
+import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -97,7 +97,7 @@ const session = async (
     folds?: { id: string; before: number; after?: number; settle?: number }[]
     layout?: 'side' | 'strip'
     growth?: number
-    dug?: number[]
+    dug?: unknown[]
   }[] = [],
   /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job. */
   toolCall: () => unknown = () => ({ result: 'ok' }),
@@ -109,7 +109,7 @@ const session = async (
     folds: [] as { id: string; before: number; after?: number; settle?: number }[],
     layout: 'side' as 'side' | 'strip',
     growth: 0,
-    dug: [] as number[],
+    dug: [] as { i: number; at: number }[],
     tick: 0,
     ticks: 0,
   }
@@ -129,7 +129,7 @@ const session = async (
     if (set.key === 'folds') latest.folds = set.value as typeof latest.folds
     if (set.key === 'layout') latest.layout = set.value as typeof latest.layout
     if (set.key === 'growth') latest.growth = set.value as number
-    if (set.key === 'dug') latest.dug = set.value as number[]
+    if (set.key === 'dug') latest.dug = set.value as typeof latest.dug
     if (set.key === 'tick') {
       latest.tick = set.value as number
       latest.ticks++
@@ -505,4 +505,60 @@ test('layout is restored from $.store at session.start, taking priority over the
   })
   // layout came back as 'strip' from $.store, not the 'side' default
   expect(await strip.find({ text: 'README.md' })).toBeDefined()
+})
+
+test('pressing the pane\'s "▬ strip" button switches the layout to the strip and closes the pane', async ($, on) => {
+  const closed: string[] = []
+  on('ui.close', ($, e) => {
+    closed.push((e as { id: string }).id)
+    return { value: undefined } as never
+  })
+  const { latest, pane } = await session($, on, DIRS, [])
+
+  await pane.press({ key: 'to-strip' })
+  expect(latest.layout).toBe('strip')
+  expect(closed).toEqual(['anthill'])
+})
+
+test('the strip draws the legend beside its "▮ side" button, so it never costs the mound or tree a row', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return Box({ children: [] }) as never
+  })
+  on('ui.close', () => ({ value: undefined }) as never)
+  const { latest } = await session($, on, DIRS, [])
+  await $.command.run({ command: 'anthill', args: 'strip', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  expect(latest.layout).toBe('strip')
+
+  const strip = await $.ui.mount({
+    plugin: 'anthill',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 90, scroll: { offset: 0, bodyRows: 5 }, view: {} } as never,
+  })
+  expect(await strip.find({ text: /main \(opus\)/ })).toBeDefined()
+  expect(await strip.find({ text: 'README.md' })).toBeDefined()
+})
+
+test('tunnel cells 0.3.0 saved as bare indices come back as dug cells, dug at the current tick', async ($, on) => {
+  const { latest } = await session($, on, DIRS, [], [{ dug: [3, 5] }])
+  expect(latest.dug).toEqual([
+    { i: 3, at: expect.any(Number) },
+    { i: 5, at: expect.any(Number) },
+  ])
+})
+
+test('once the mound has grown, a busy ant digs on past the base tunnel, into the hump', async ($, on) => {
+  on('session.usage', () => ({ value: { context: { window: 1000, breakdown: { autoCompactThreshold: 800 } }, rateLimits: [] } }) as never)
+  on('session.measure', () => ({ changed: [] }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest } = await session($, on, DIRS, [])
+
+  await $.session.measure({ context: { window: 1000, tokens: 800 }, rateLimits: [], changed: ['context'] } as never)
+  expect(latest.growth).toBe(GROWTH_STAGES - 1)
+  expect(GROWTH.at(-1)!.tunnel.length).toBeGreaterThan(TUNNEL.length)
+
+  void $.tool.call({ tool: 'Bash', command: 'sleep 9', tool_use_id: 'b1' } as never)
+  await clock.advance(120 * 90) // long enough for the first seat to walk the whole grown route
+  expect(Math.max(...latest.dug.map(d => d.i))).toBeGreaterThanOrEqual(TUNNEL.length)
 })

@@ -1,11 +1,13 @@
-import type { Row, Ant, Task, Breed, Fold } from '../types'
+import type { Row, Ant, Task, Breed, Fold, Dug } from '../types'
 import {
   MOUND,
   MOUND_PALETTE,
   SHAPES,
   TREE_INDENT,
   glyphStart,
+  stageOf,
   trailIndexFor,
+  type Cell as MoundCell,
   type MoundShape,
   type Orientation,
 } from './mound'
@@ -32,13 +34,9 @@ const SPARKLE_COLORS: Record<string, string | undefined> = {
 /** One character cell of the picture. */
 type Cell = { ch: string; color?: string; bg?: string; bold?: boolean }
 
-/** `shape`'s mound/mask at `stage`, falling back to stage 0 for a bad index. */
-const stageArt = (shape: MoundShape, stage: number): { mound: string[]; mask: string[] } =>
-  shape.stages[stage] ?? shape.stages[0]!
-
 /** The mound as cells, colored through its mask; the sparkles on top twinkle with `tick`. */
 const moundCells = (tick: number, shape: MoundShape, stage: number): Cell[][] => {
-  const { mound, mask: maskLines } = stageArt(shape, stage)
+  const { mound, mask: maskLines } = stageOf(shape, stage)
   return mound.map((text, li) => {
     const mask = Array.from(maskLines[li] ?? '')
     return Array.from(text).map((ch, i): Cell => {
@@ -54,10 +52,58 @@ const moundCells = (tick: number, shape: MoundShape, stage: number): Cell[][] =>
   })
 }
 
-/** A busy ant's dot's current tunnel cell, for whichever shape is being drawn. */
-const tunnelCellFor = (a: Ant, shape: MoundShape): { line: number; col: number } | undefined => {
-  const i = tunnelIndex(a, shape.tunnel.length)
-  return i === undefined ? undefined : shape.tunnel[i]
+/** A busy ant's dot's current cell along `route` (the drawn stage's tunnel). */
+const tunnelCellFor = (a: Ant, route: MoundCell[]): MoundCell | undefined => {
+  const i = tunnelIndex(a, route.length)
+  return i === undefined ? undefined : route[i]
+}
+
+// ---- dug tunnel cells -------------------------------------------------------
+
+/** A well-mixed hash of a tunnel index (murmur3's finalizer), so neighbouring cells look unrelated. */
+const cellHash = (i: number): number => {
+  let h = (i + 0x9e3779b9) | 0
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b)
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35)
+  return (h ^ (h >>> 16)) >>> 0
+}
+
+/** Packed tunnel walls: a deeper red than the mound's own shades, so a dug tunnel reads as one. */
+const PASSAGE_COLOR = '#8a3a24'
+/** Larvae tended in a nursery chamber. */
+const LARVA_COLOR = '#f2e2c0'
+/** A root grown down through the mound. */
+const ROOT_COLOR = '#9a7a4e'
+
+/** The colors of the fungi that sprout in old tunnels: pale cream, pink, and a glowing teal. */
+const FUNGUS_COLORS = ['#f3e5c0', '#ef9fbd', '#6fe0c8'] as const
+
+/** A fungus's growth, by its tunnel's age in ticks: a spore, a sprout, a stalk, then a cap. */
+const FUNGUS_FRAMES: readonly [minAge: number, ch: string][] = [
+  [140, 'τ'],
+  [80, 'ı'],
+  [40, ','],
+  [15, '.'],
+]
+
+/**
+ * How a dug tunnel cell looks, `age` ticks after it was dug: never a blank, but a change to
+ * the mound itself — packed, deeper-red tunnel wall where the shades were, a nursery chamber
+ * of larvae, a root showing through, or (about one cell in seven) a fungus that grows from a
+ * spore to a capped stalk the longer the colony keeps working (ticks only advance while
+ * something is busy). Which of them a cell gets is fixed by its index, so it never changes
+ * kind from one draw to the next; a fungus too young to show yet is plain tunnel wall.
+ */
+export function dugSprite(i: number, age: number): { ch: string; color: string } {
+  const h = cellHash(i)
+  const kind = h % 20
+  if (kind >= 17) {
+    const frame = FUNGUS_FRAMES.find(([minAge]) => age >= minAge)
+    if (frame) return { ch: frame[1], color: FUNGUS_COLORS[(h >>> 8) % FUNGUS_COLORS.length]! }
+  }
+  if (kind === 15 || kind === 16) return { ch: '~', color: ROOT_COLOR } // a root
+  if (kind >= 11 && kind <= 14) return { ch: 'o', color: LARVA_COLOR } // a nursery chamber's larva
+  return { ch: '▓', color: PASSAGE_COLOR } // packed tunnel wall
 }
 
 /**
@@ -156,8 +202,37 @@ type Opts = {
   orientation?: Orientation
   /** The mound's growth stage (how full the context window is); defaults to 0, ungrown. */
   growth?: number
-  /** Tunnel cell indices already dug (see mound.ts's TUNNEL/H_TUNNEL); defaults to none. */
-  dug?: number[]
+  /** Tunnel cells already dug, along the drawn stage's route; defaults to none. */
+  dug?: Dug[]
+  /** Whether to draw the legend under the picture; defaults to true (the strip draws its own beside its button). */
+  legend?: boolean
+}
+
+/** The legend: each ant's glyph, label and model, wrapped into lines `width` wide. */
+export const legendLines = (ants: Ant[], width: number, tick: number): Line[] => {
+  const items = ants.map(a => ({
+    text: antGlyph(a.breed, a.task, tick) + ' ' + a.label + ' (' + a.breed + ')',
+    color: a.color,
+  }))
+  const legend: Line[] = []
+  let cur: Line = []
+  let curW = 0
+  for (const item of items) {
+    const w = item.text.length + 2
+    if (curW > 0 && curW + w > width) {
+      legend.push(cur)
+      cur = []
+      curW = 0
+    }
+    if (curW > 0) {
+      cur.push({ text: '  ', dim: true })
+      curW += 2
+    }
+    cur.push({ text: item.text, color: item.color })
+    curW += item.text.length
+  }
+  if (cur.length > 0) legend.push(cur)
+  return legend
 }
 
 
@@ -181,8 +256,28 @@ const clipLine = (line: Line, width: number): Line => {
  * Each ant in the hole peeks from its own seat (seatPeeks), so one ant leaving
  * never makes another's antennae jump.
  */
-const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: number[]): Line[] => {
+const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: Dug[]): Line[] => {
   const cells = moundCells(tick, shape, stage)
+  const route = stageOf(shape, stage).tunnel
+
+  // The ground first: cells some busy ant has already dug through (a cell past the drawn
+  // stage's route, dug while the mound was bigger, isn't shown), then the busy ants' dots
+  // digging on, so ants on the trail and antennae in the hole are drawn over both.
+  for (const d of dug) {
+    const cell = route[d.i]
+    const row = cell && cells[cell.line]
+    if (!cell || !row) continue
+    const { ch, color } = dugSprite(d.i, tick - d.at)
+    paint(row, cell.col, ch, color)
+  }
+  // busy ants (no file to point to), as a dot digging through the mound body. seatOrbits
+  // already keeps their seats spaced apart, so unlike the trail no two can ever land
+  // on the same cell here (apart from a bounce at the tunnel's ends, briefly hiding one).
+  for (const a of ants) {
+    const cell = tunnelCellFor(a, route)
+    const row = cell && cells[cell.line]
+    if (cell && row) paint(row, cell.col, BUSY_DOT, a.color)
+  }
 
   let inMouth = false
   for (const a of seatPeeks(ants)) {
@@ -252,31 +347,11 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
     }
   })
 
-  // cells any busy ant's dot has already dug through, drawn before the dots themselves
-  // so a dot passing back over its own tunnel still shows on top of it.
-  for (const i of dug) {
-    const cell = shape.tunnel[i]
-    const row = cell && cells[cell.line]
-    if (cell && row) paint(row, cell.col, DUG_CHAR, MOUND_PALETTE.H!)
-  }
-
-  // busy ants (no file to point to), as a dot digging through the mound body. seatOrbits
-  // already keeps their seats spaced apart, so unlike the trail no two can ever land
-  // on the same cell here (apart from a bounce at the tunnel's ends, briefly hiding one).
-  for (const a of ants) {
-    const cell = tunnelCellFor(a, shape)
-    const row = cell && cells[cell.line]
-    if (cell && row) paint(row, cell.col, BUSY_DOT, a.color)
-  }
-
   return cells.map(toLine)
 }
 
 /** A busy ant's dot, digging through the mound body while it has no file to point to. */
 const BUSY_DOT = '•'
-
-/** A tunnel cell some busy ant's dot has already dug through. */
-const DUG_CHAR = '·'
 
 /** Columns `start` (inclusive) to `end` (exclusive) of one mound line, held by an ant. */
 type Span = { start: number; end: number }
@@ -443,7 +518,7 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const { width, height } = opts
   const orientation = opts.orientation ?? 'vertical'
   const shape = SHAPES[orientation]
-  const stage = Math.max(0, Math.min(shape.stages.length - 1, opts.growth ?? 0))
+  const stage = shape.stages.indexOf(stageOf(shape, opts.growth ?? 0))
 
   // -- mound block --
   const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [])
@@ -451,30 +526,7 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const foldBlock: Line[] = folds.flatMap(f => foldLines(f, indent))
 
   // -- legend block --
-  const legendItems = ants.map(a => ({
-    text: antGlyph(a.breed, a.task, opts.tick) + ' ' + a.label + ' (' + a.breed + ')',
-    color: a.color,
-  }))
-  const legend: Line[] = []
-  if (legendItems.length > 0) {
-    let cur: Line = []
-    let curW = 0
-    for (const item of legendItems) {
-      const w = item.text.length + 2
-      if (curW > 0 && curW + w > width) {
-        legend.push(cur)
-        cur = []
-        curW = 0
-      }
-      if (curW > 0) {
-        cur.push({ text: '  ', dim: true })
-        curW += 2
-      }
-      cur.push({ text: item.text, color: item.color })
-      curW += item.text.length
-    }
-    if (cur.length > 0) legend.push(cur)
-  }
+  const legend = opts.legend === false ? [] : legendLines(ants, width, opts.tick)
 
   // -- tree rows --
   const prefixSteps = branchPrefixSteps(rows)
@@ -533,6 +585,6 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const anchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
 
   return orientation === 'horizontal'
-    ? composeHorizontal(mound, foldBlock, legend, treeLines, indent, anchor, width, height, stageArt(shape, stage).mound)
+    ? composeHorizontal(mound, foldBlock, legend, treeLines, indent, anchor, width, height, stageOf(shape, stage).mound)
     : composeVertical(mound, foldBlock, legend, treeLines, indent, anchor, width, height)
 }
