@@ -476,7 +476,8 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
 
   const settled = keepApart(nextAnts, from)
   const seated = seatOrbits(seatPeeks(settled))
-  return { ants: seated, rows: dropOrphanBuilds(nextRows, seated) }
+  const ghostless = dropGhosts(dropOrphanBuilds(nextRows, seated), seated)
+  return { ants: ghostless.ants, rows: ghostless.rows }
 }
 
 /**
@@ -524,6 +525,37 @@ function dropOrphanBuilds(rows: Row[], ants: Ant[]): Row[] {
   const wanted = new Set<string>()
   for (const a of ants) for (const j of [a.job, ...a.queue]) if (j?.kind === 'build') wanted.add(j.path)
   return rows.map((r) => (r.built === undefined || wanted.has(r.path) ? r : completed(r)))
+}
+
+/**
+ * Removes the rows `gone` picks, moving ants on rows below each one up with them (an
+ * ant on a removed row is left on whatever row now takes its place; step() clamps an
+ * ant left past the end). Returns the very same arrays when nothing is removed.
+ */
+export function dropRows(rows: Row[], ants: Ant[], gone: (row: Row) => boolean): { rows: Row[]; ants: Ant[] } {
+  const removed: number[] = []
+  rows.forEach((r, i) => {
+    if (gone(r)) removed.push(i)
+  })
+  if (removed.length === 0) return { rows, ants }
+  const kept = rows.filter((_, i) => !removed.includes(i))
+  const moved = ants.map((a) => {
+    if (a.at < 0) return a
+    const above = removed.filter((i) => i < a.at).length
+    return above === 0 ? a : { ...a, at: a.at - above }
+  })
+  return { rows: kept, ants: moved }
+}
+
+/**
+ * A ghost row (its path isn't on disk: a failed call named it) is removed once its flash
+ * has faded and no ant still means to go there, so failed calls leave no fake rows.
+ */
+function dropGhosts(rows: Row[], ants: Ant[]): { rows: Row[]; ants: Ant[] } {
+  if (!rows.some((r) => r.ghost)) return { rows, ants }
+  const wanted = new Set<string>()
+  for (const a of ants) for (const j of [a.job, ...a.queue]) if (j) wanted.add(j.path)
+  return dropRows(rows, ants, (r) => !!r.ghost && !r.flash && !wanted.has(r.path))
 }
 
 /** Moves ants on tree rows at or after `index` down by `count` rows that were put in above them. */

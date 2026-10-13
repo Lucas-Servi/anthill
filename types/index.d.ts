@@ -29,6 +29,12 @@ export type Row = {
    * flashes in the mishap's color for as long as this lasts, then fades.
    */
   flash?: Mishap
+  /**
+   * Set on a row whose path isn't on disk after all: one a failed or denied call named
+   * (a Read of a missing file, a Write that never wrote its new file). It is shown only
+   * while its flash lasts, then step() removes it, so failed calls leave no fake rows.
+   */
+  ghost?: true
 }
 
 export type Task = 'home' | 'walking' | 'working' | 'building' | 'returning' | 'busy'

@@ -11,6 +11,7 @@ import {
   colorFor,
   dig,
   drop,
+  dropRows,
   finish,
   markBusy,
   newAnt,
@@ -222,6 +223,11 @@ export const register: Register = on => {
     const stored = await $.store.get('layout')
     layout = stored === 'strip' || stored === 'side' ? stored : (await read($, layoutAtom)) ?? 'side'
     spawned = Math.max(0, ants.length - 1)
+    // Files a failed call put on the tree in an older version (or deleted since) leave
+    // their rows behind: drop any saved file row whose file isn't on disk any more.
+    const onDisk = await Promise.all(rows.map(r => (r.isDir ? true : $.fs.exists(`${cwd}/${r.path}`))))
+    const missing = new Set(rows.filter((_, i) => !onDisk[i]).map(r => r.path))
+    ;({ rows, ants } = dropRows(rows, ants, r => missing.has(r.path)))
     if (rows.length === 0) await listInto($, '', 0)
     if (!ants.some(a => a.id === MAIN)) antFor(MAIN, 'main', await $.session.model())
 
@@ -350,8 +356,12 @@ export const register: Register = on => {
         const onAnt = mishap !== undefined && cur?.job?.id === job.id
         if (cur) setAnt(touch(onAnt ? drop({ ...cur, mishap }, job.id) : finish(cur, job.id)))
         if (mishap) {
+          // A path the failed call named that isn't on disk (a Read of a missing file, a
+          // Write that never wrote its new one) only flashes, then step() removes it.
+          const ghost = !(await $.fs.exists(`${cwd}/${job.path}`))
           const at = indexOf(rows, job.path)
-          if (at !== -1) rows = rows.map((r, i) => (i === at ? { ...r, flash: mishap! } : r))
+          const flagged = (r: Row): Row => (ghost ? { ...r, flash: mishap!, ghost: true } : { ...r, flash: mishap! })
+          if (at !== -1) rows = rows.map((r, i) => (i === at ? flagged(r) : r))
         }
         await publish($)
       } else if (mishap) {

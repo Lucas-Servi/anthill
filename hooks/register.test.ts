@@ -744,3 +744,47 @@ test('once the mound has grown, a busy ant digs on past the base tunnel, into th
   await clock.advance(120 * 90) // long enough for the first seat to walk the whole grown route
   expect(Math.max(...latest.dug.map(d => d.i))).toBeGreaterThanOrEqual(TUNNEL.length)
 })
+
+test('a failed Read of a file that isn\'t on disk flashes its row, then the row is removed: no fake row left behind', async ($, on) => {
+  const { clock, latest, idles } = await session($, on, DIRS, [`${CWD}/src/nope.ts`], [], () => ({ isError: true, result: 'File does not exist', text: 'File does not exist' }))
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/nope.ts`, tool_use_id: 'r1' } as never)
+  const row = latest.rows.find(r => r.path === 'src/nope.ts') as { flash?: unknown; ghost?: true } | undefined
+  expect(row?.flash).toMatchObject({ kind: 'error' })
+  expect(row?.ghost).toBe(true)
+
+  await clock.advance(120 * (MISHAP_TICKS + 3))
+  expect(latest.rows.some(r => r.path === 'src/nope.ts')).toBe(false)
+  expect(latest.rows.some(r => r.path === 'src/main.ts')).toBe(true) // the real files stay
+  expect(await idles()).toBe(true)
+})
+
+test('a denied Read of a file that is on disk flashes its row and keeps it', async ($, on) => {
+  const { clock, latest } = await session($, on, DIRS, [], [], () => ({ deny: 'no' }))
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
+  expect((latest.rows.find(r => r.path === 'src/main.ts') as { ghost?: true } | undefined)?.ghost).toBeUndefined()
+  await clock.advance(120 * (MISHAP_TICKS + 3))
+  expect(latest.rows.some(r => r.path === 'src/main.ts')).toBe(true)
+})
+
+test('a denied Write of a new file never wrote it: its branch flashes, then it is removed', async ($, on) => {
+  const { clock, latest, idles } = await session($, on, DIRS, [`${CWD}/src/new.ts`], [], () => ({ deny: 'no' }))
+
+  await $.tool.call({ tool: 'Write', file_path: `${CWD}/src/new.ts`, content: '', tool_use_id: 'w1' } as never)
+  expect((latest.rows.find(r => r.path === 'src/new.ts') as { ghost?: true } | undefined)?.ghost).toBe(true)
+  await clock.advance(120 * (MISHAP_TICKS + 10))
+  expect(latest.rows.some(r => r.path === 'src/new.ts')).toBe(false)
+  expect(await idles()).toBe(true)
+})
+
+test('saved file rows whose files are no longer on disk are dropped when the session starts', async ($, on) => {
+  const rows = [
+    { path: 'src', name: 'src', depth: 0, isDir: true, isOpen: false },
+    { path: 'GONE.md', name: 'GONE.md', depth: 0, isDir: false },
+    { path: 'README.md', name: 'README.md', depth: 0, isDir: false },
+  ]
+  const { latest, pane } = await session($, on, DIRS, [`${CWD}/GONE.md`], [{ rows } as never])
+  expect(latest.rows.map(r => r.path)).toEqual(['src', 'README.md'])
+  expect(await pane.find({ text: 'GONE.md' })).toBeUndefined()
+})

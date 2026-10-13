@@ -8,6 +8,7 @@ import {
   assign,
   finish,
   drop,
+  dropRows,
   retire,
   step,
   shiftForInsert,
@@ -1048,4 +1049,32 @@ test('drop turns an ant back at once from the job whose call failed, wherever it
   // a queued job that failed is dropped from the queue, the current one carries on
   const busy: Ant = { ...newAnt('a', 'main', 'other', '#fff'), at: 0, task: 'walking', job, queue: [next] }
   expect(drop(busy, 'k')).toMatchObject({ task: 'walking', job, queue: [] })
+})
+
+test('dropRows removes the rows it picks and moves ants below them up; nothing removed, the same arrays back', () => {
+  const rows: Row[] = ['a', 'b', 'c', 'd'].map((n) => ({ path: n, name: n, depth: 0, isDir: false }))
+  const ants: Ant[] = [0, 2, 3, HOME].map((at, i) => ({ ...newAnt(String(i), 'x', 'other', '#fff'), at }))
+  const out = dropRows(rows, ants, (r) => r.path === 'b')
+  expect(out.rows.map((r) => r.path)).toEqual(['a', 'c', 'd'])
+  expect(out.ants.map((a) => a.at)).toEqual([0, 1, 2, HOME]) // below b moved up; above and off-tree untouched
+  const same = dropRows(rows, ants, () => false)
+  expect(same.rows).toBe(rows)
+  expect(same.ants).toBe(ants)
+})
+
+test('a ghost row stays while it flashes or an ant still means to go there, and is removed once neither holds', () => {
+  const ghost: Row = { path: 'gone.ts', name: 'gone.ts', depth: 0, isDir: false, ghost: true, flash: { kind: 'error', ticks: 2 } }
+  const rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false }, ghost, { path: 'z.ts', name: 'z.ts', depth: 0, isDir: false }]
+  const working: Ant = { ...newAnt('w', 'x', 'other', '#fff'), at: 2, task: 'working', job: { id: 'j', path: 'z.ts', kind: 'work' } }
+  let result = step([working], rows)
+  expect(result.rows.map((r) => r.path)).toEqual(['a.ts', 'gone.ts', 'z.ts']) // still flashing
+  result = step(result.ants, result.rows)
+  expect(result.rows.map((r) => r.path)).toEqual(['a.ts', 'z.ts']) // flash over: gone
+  expect(result.ants[0]!.at).toBe(1) // the ant on the row below moved up with it
+  expect(result.rows[result.ants[0]!.at]!.path).toBe('z.ts')
+
+  // an ant that still has the ghost as its job keeps it there
+  const walker: Ant = { ...newAnt('v', 'x', 'other', '#fff'), at: HOME, task: 'walking', job: { id: 'k', path: 'gone.ts', kind: 'work' } }
+  const held = step([walker], [{ ...ghost, flash: undefined }])
+  expect(held.rows.map((r) => r.path)).toEqual(['gone.ts'])
 })
