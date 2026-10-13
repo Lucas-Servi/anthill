@@ -114,10 +114,14 @@ export type Fold = {
   before: number
   /** Message count after; absent while compaction still runs. */
   after?: number
-  /** Animation frame, advanced by the same tick loop that steps the ants. */
+  /** Animation frame, advanced by the same tick loop that steps the ants while it runs. */
   frame: number
-  /** Ticks left to show the "(summarized ... )" row before it disappears. */
+  /** Ticks left to show the settled "memory folded" header while the tree unfolds again. */
   settle?: number
+  /** Set on main's own compaction: the one that folds the tree and shrinks the mound. */
+  isMain?: true
+  /** `frame` when it resolved: how far the tree had folded, so it unfolds from there. */
+  peak?: number
 }
 
 /**

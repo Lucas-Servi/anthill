@@ -23,7 +23,7 @@ import {
   step,
 } from './ants'
 import { GROWTH_STAGES, SHAPES, stageFor, stageOf } from './mound'
-import { compose, legendLines, type Line } from './render'
+import { SETTLE_TICKS, compose, legendLines, type Line } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -32,8 +32,6 @@ const MAIN = 'main'
 // How many idle timer firings between antennae wiggles, while every ant is home and
 // there's nothing to crawl to: a slow idle animation, not the full simulation tick.
 const IDLE_WIGGLE_EVERY = 4
-// How many ticks a resolved compaction's settled "(summarized ...)" row holds before it disappears.
-const SETTLE_TICKS = 6
 // How often (in ticks) the tick loop sweeps $.agent.list() to retire ants whose subagent
 // stopped without a turn.complete: about 3s at TICK_MS.
 const RECONCILE_EVERY = 25
@@ -284,6 +282,7 @@ export const register: Register = on => {
       dug = dig(dug, ants, route.length, tick)
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
+        // (a settled fold's frame stays put: `peak` already says how far the tree folded)
         .filter(f => f.settle === undefined || f.settle > 0)
       // Every few seconds, while some subagent's ant exists, check it's still really
       // there: one that was stopped, failed or killed without a turn.complete would
@@ -404,13 +403,14 @@ export const register: Register = on => {
     const id = e.agentId ?? MAIN
     const ant = antFor(id, id === MAIN ? 'main' : 'agent')
     setAnt(markBusy(ant))
-    folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0 }]
+    // main's own compaction folds the tree and shrinks the mound; a subagent's only shows its header
+    folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0, ...(e.agentId ? {} : { isMain: true as const }) }]
     await publish($)
     try {
       const result = await next(e)
       const before = folds.find(f => f.id === id)?.before ?? e.messages.length
       const after = result.skip !== undefined ? before : result.messages.length
-      folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS } : f))
+      folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS, peak: f.frame } : f))
       // A resolved compaction of main's own conversation (not a dry precompute, and not
       // skipped) shrinks it back down: the mound and its dug tunnels go back to their own
       // starting shape too. A subagent's own compaction never touches the mound at all.

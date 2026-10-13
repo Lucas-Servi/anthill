@@ -1,6 +1,7 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
 import { MISHAP_TICKS, STALE_TICKS } from './ants'
+import { SETTLE_TICKS } from './render'
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -95,7 +96,7 @@ const session = async (
   saved: {
     rows?: { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[]
     ants?: { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[]
-    folds?: { id: string; before: number; after?: number; settle?: number }[]
+    folds?: { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[]
     layout?: 'side' | 'strip'
     growth?: number
     dug?: unknown[]
@@ -108,7 +109,7 @@ const session = async (
   const latest = {
     rows: [] as { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[],
     ants: [] as { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[],
-    folds: [] as { id: string; before: number; after?: number; settle?: number }[],
+    folds: [] as { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[],
     layout: 'side' as 'side' | 'strip',
     growth: 0,
     dug: [] as { i: number; at: number }[],
@@ -493,16 +494,16 @@ test('session.compact shows a fold for the compacting id, animates while next(e)
   const result = $.session.compact({ trigger: 'manual', messages } as never)
   await clock.advance(0) // let the hook's own pre-amble (markBusy, publish) land before the gate holds it
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('busy')
-  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12 })])
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12, isMain: true })])
 
   resolveCompact!()
   await result
   await clock.advance(0) // let the finally's publish land
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
-  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12, after: 9 })])
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', before: 12, after: 9, peak: expect.any(Number) })])
 
   // the settled row holds for a few ticks, then disappears, and the clock goes idle again
-  await clock.advance(120 * 10)
+  await clock.advance(120 * (SETTLE_TICKS + 5))
   expect(latest.folds).toEqual([])
   expect(await idles()).toBe(true)
 })
@@ -787,4 +788,12 @@ test('saved file rows whose files are no longer on disk are dropped when the ses
   const { latest, pane } = await session($, on, DIRS, [`${CWD}/GONE.md`], [{ rows } as never])
   expect(latest.rows.map(r => r.path)).toEqual(['src', 'README.md'])
   expect(await pane.find({ text: 'GONE.md' })).toBeUndefined()
+})
+
+test('a subagent\'s own compaction is not main\'s: it neither folds the tree nor refactors the mound', async ($, on) => {
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  const { latest } = await session($, on, DIRS, [])
+  await $.session.compact({ trigger: 'manual', agentId: 'sub1', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'sub1', after: 1 })])
+  expect(latest.folds[0]!.isMain).toBeUndefined()
 })

@@ -393,6 +393,35 @@ function horizontalStage([foot, body, crown, spill]: Hump): Stage {
 /** The horizontal mound at every growth stage; H_GROWTH[0] is H_MOUND itself. */
 export const H_GROWTH: Stage[] = H_HUMP.map(horizontalStage)
 
+/**
+ * Where the colony's workers haul dirt while main's conversation is compacted (the ants
+ * refactor the anthill: the hump comes down, the mound is packed tighter): from the hump's
+ * side up toward the hole, as the left column of a worker drawn two cells wide ('▪o', a
+ * clod carried ahead of its ant). Clear of the hole and its peek slots.
+ */
+export const HAUL: Cell[] = [
+  { line: 4, col: 16 },
+  { line: 3, col: 15 },
+  { line: 2, col: 14 },
+  { line: 1, col: 12 },
+  { line: 1, col: 11 },
+]
+
+/** HAUL for the horizontal mound: along the body's right half, then over the shoulder to the hole. */
+export const H_HAUL: Cell[] = [
+  { line: 2, col: 19 },
+  { line: 2, col: 18 },
+  { line: 2, col: 17 },
+  { line: 2, col: 16 },
+  { line: 2, col: 15 },
+  { line: 2, col: 14 },
+  { line: 2, col: 13 },
+  { line: 1, col: 11 },
+  { line: 1, col: 10 },
+  { line: 1, col: 8 },
+  { line: 1, col: 7 },
+]
+
 /** Which mound a pane draws: the usual tall one, or the short, wide one. */
 export type Orientation = 'vertical' | 'horizontal'
 
@@ -412,6 +441,8 @@ export type MoundShape = {
   /** The base tunnel route; a grown stage's own route (stages[n].tunnel) extends it. */
   tunnel: Cell[]
   tunnelSeats: number
+  /** Where workers haul the hump away while main compacts (see HAUL). */
+  haul: Cell[]
 }
 
 export const SHAPES: Record<Orientation, MoundShape> = {
@@ -428,6 +459,7 @@ export const SHAPES: Record<Orientation, MoundShape> = {
     peeks: PEEKS,
     tunnel: TUNNEL,
     tunnelSeats: TUNNEL_SEATS,
+    haul: HAUL,
   },
   horizontal: {
     mound: H_MOUND,
@@ -442,6 +474,7 @@ export const SHAPES: Record<Orientation, MoundShape> = {
     peeks: H_PEEKS,
     tunnel: H_TUNNEL,
     tunnelSeats: H_TUNNEL_SEATS,
+    haul: H_HAUL,
   },
 }
 

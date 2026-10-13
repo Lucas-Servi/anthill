@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
+import { foldTree, SETTLE_TICKS, MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
 import {
   GROWTH,
   GROWTH_STAGES,
@@ -623,15 +623,14 @@ test('compose reserves room for fold blocks above the tree, same precedence as t
   expect(short.map(lineText).join('\n').includes('folding its memory')).toBe(true)
 })
 
-test('an unresolved fold shows a generic collapsing block, never (summarized ...); a resolved one shows the real counts', () => {
-  const running: Fold = { id: 'main', label: 'main', before: 9, frame: 0 }
-  const runningText = compose(TREE, [], [running], { width: 40, height: 20, tick: 0 }).map(lineText).join('\n')
-  expect(runningText.includes('folding its memory')).toBe(true)
-  expect(runningText.includes('summarized')).toBe(false)
-
-  const settled: Fold = { id: 'main', label: 'main', before: 9, after: 2, frame: 0, settle: 3 }
-  const settledText = compose(TREE, [], [settled], { width: 40, height: 20, tick: 0 }).map(lineText).join('\n')
-  expect(settledText.includes('(summarized, 9 → 2)')).toBe(true)
+test('a running fold\'s header says it\'s folding, its spinner turning frame to frame; a resolved one shows the real counts', () => {
+  const header = (f: Fold) => compose(TREE, [], [f], { width: 60, height: 20, tick: 0 }).map(lineText).find(l => l.includes('memory'))!
+  const running = header({ id: 'main', label: 'main', before: 9, frame: 0 })
+  expect(running).toContain('main folding its memory')
+  expect(header({ id: 'main', label: 'main', before: 9, frame: 1 })).not.toBe(running) // the spinner moved
+  expect(header({ id: 'main', label: 'main', before: 9, after: 2, frame: 4, settle: 3 })).toContain("main's memory folded: 9 → 2 messages")
+  const skipped = compose(TREE, [], [{ id: 'main', label: 'main', before: 9, after: 9, frame: 4, settle: 3 }], { width: 60, height: 20, tick: 0 })
+  expect(skipped.map(lineText).join('\n')).toContain('main: nothing to fold')
 })
 
 test('a climbing ant\'s glyph overlays the shallower ancestor column, not the row\'s own prefix end', () => {
@@ -1039,6 +1038,114 @@ test('every line still fits the width with a mishap ant blinking and a row flash
     for (let tick = 0; tick < 4; tick++) {
       const lines = compose(rows, crowd, [], { width, height: 30, tick })
       for (const l of lines) expect(Array.from(lineText(l)).length <= width).toBe(true)
+    }
+  }
+})
+
+// ---- compaction: the tree folds up, the ants refactor the anthill ----------------
+
+const NESTED: Row[] = [
+  row({ name: 'a', path: 'a', isDir: true, isOpen: true }),
+  row({ name: 'b', path: 'a/b', depth: 1, isDir: true, isOpen: true }),
+  row({ name: 'c.ts', path: 'a/b/c.ts', depth: 2 }),
+  row({ name: 'd.ts', path: 'a/d.ts', depth: 1 }),
+  row({ name: 'e', path: 'e', isDir: true }),
+  row({ name: 'f.md', path: 'f.md' }),
+  row({ name: 'g.md', path: 'g.md' }),
+  row({ name: 'h.md', path: 'h.md' }),
+]
+const mainFold = (o: Partial<Fold>): Fold => ({ id: 'main', label: 'main', before: 40, frame: 0, isMain: true, ...o })
+
+test('foldTree tucks the deepest level away first, then the next, then folds top-level rows away from the bottom', () => {
+  const none = foldTree(NESTED, 0, new Set())
+  expect(none.shown.every(Boolean)).toBe(true)
+  const one = foldTree(NESTED, 1, new Set())
+  expect(one.shown).toEqual([true, true, false, true, true, true, true, true]) // depth 2 tucked
+  expect(one.tucked[1]).toBe(1) // into b/
+  const two = foldTree(NESTED, 2, new Set())
+  expect(two.shown).toEqual([true, false, false, false, true, true, true, true])
+  expect(two.tucked[0]).toBe(3) // b/, c.ts and d.ts all tucked under a/
+  const all = foldTree(NESTED, 99, new Set())
+  expect(all.shown.filter(Boolean).length).toBe(3) // FOLDED_KEEP top-level rows stay
+  expect(all.folded).toBe(2) // g.md and h.md folded away below
+})
+
+test('foldTree never folds away a row an ant stands on, nor the folders above it', () => {
+  const view = foldTree(NESTED, 99, new Set([2])) // an ant on a/b/c.ts
+  expect(view.shown[0]).toBe(true)
+  expect(view.shown[1]).toBe(true)
+  expect(view.shown[2]).toBe(true)
+})
+
+test('main compacting folds the drawn tree (marks and all); a subagent compacting only shows its header', () => {
+  const folded = compose(NESTED, [], [mainFold({ frame: 4 })], { width: 60, height: 30, tick: 0 }).map(lineText).join('\n')
+  expect(folded).toContain('a/ +3')
+  expect(folded).not.toContain('c.ts')
+  const sub = compose(NESTED, [], [{ id: 'sub', label: 'Explore', before: 9, frame: 4 }], { width: 60, height: 30, tick: 0 }).map(lineText).join('\n')
+  expect(sub).toContain('Explore folding its memory')
+  expect(sub).toContain('c.ts')
+  const later = compose(NESTED, [], [mainFold({ frame: 40 })], { width: 60, height: 30, tick: 0 }).map(lineText).join('\n')
+  expect(later).toContain('… 2 folded away')
+})
+
+test('once resolved the tree holds folded under the banner, then unfolds so it is whole as the banner leaves', () => {
+  const held = compose(NESTED, [], [mainFold({ after: 8, frame: 40, peak: 40, settle: SETTLE_TICKS - 1 })], { width: 60, height: 30, tick: 0 }).map(lineText).join('\n')
+  expect(held).toContain("main's memory folded: 40 → 8 messages")
+  expect(held).toContain('folded away')
+  const end = compose(NESTED, [], [mainFold({ after: 8, frame: 40, peak: 40, settle: 0 })], { width: 60, height: 30, tick: 0 }).map(lineText).join('\n')
+  for (const r of NESTED) expect(end).toContain(r.name)
+})
+
+test('while main compacts the hump comes down a stage at a time, and workers haul clods along the haul path', () => {
+  const widest = (lines: Line[]) => Math.max(...lines.slice(0, MOUND.length).map(l => Array.from(lineText(l)).length))
+  const grownLines = compose(TREE, [], [], { width: 60, height: 30, tick: 0, growth: GROWTH.length - 1 })
+  const early = compose(TREE, [], [mainFold({ frame: 0 })], { width: 60, height: 30, tick: 0, growth: GROWTH.length - 1 })
+  const late = compose(TREE, [], [mainFold({ frame: 999 })], { width: 60, height: 30, tick: 0, growth: GROWTH.length - 1 })
+  expect(widest(early)).toBe(widest(grownLines))
+  expect(widest(late)).toBeLessThan(widest(grownLines))
+  const main = ant({ id: 'main', color: '#ff5f5f' })
+  const working = compose(TREE, [main], [mainFold({ frame: 6 })], { width: 60, height: 30, tick: 0 })
+  const workers = SHAPES.vertical.haul.filter(p => cells(working[p.line])[p.col + 1]?.ch === 'o' && cells(working[p.line])[p.col + 1]?.color === '#ff5f5f')
+  expect(workers.length).toBeGreaterThan(0)
+  const done = compose(TREE, [main], [mainFold({ after: 9, frame: 6, peak: 6, settle: 5 })], { width: 60, height: 30, tick: 0 })
+  expect(SHAPES.vertical.haul.some(p => cells(done[p.line])[p.col + 1]?.color === '#ff5f5f')).toBe(false) // gone home
+})
+
+test('the refactoring ants pack the mound tighter once the hump is gone, filling its tunnels; it eases back after', () => {
+  const loose = (lines: Line[]) => lines.slice(0, MOUND.length).map(lineText).join('').split('░').length - 1
+  const base = compose(TREE, [], [], { width: 60, height: 30, tick: 0 })
+  const packing = compose(TREE, [], [mainFold({ frame: 8 })], { width: 60, height: 30, tick: 0 })
+  expect(loose(packing)).toBeLessThan(loose(base))
+  const tunnel = TUNNEL[0]!
+  const filled = compose(TREE, [], [mainFold({ frame: 999 })], { width: 60, height: 30, tick: 500, dug: [{ i: 0, at: 0 }] })
+  expect(cells(filled[tunnel.line])[tunnel.col]!.ch).toBe('▒')
+  const after = compose(TREE, [], [mainFold({ after: 9, frame: 999, peak: 999, settle: 0 })], { width: 60, height: 30, tick: 0 })
+  expect(loose(after)).toBe(loose(base))
+  const skipped = compose(TREE, [], [mainFold({ after: 40, frame: 999, peak: 999, settle: 20 })], { width: 60, height: 30, tick: 0 })
+  expect(loose(skipped)).toBe(loose(base)) // nothing compacted, nothing packed
+})
+
+test('the haul paths stay on the mound, clear of the hole and its peek slots, in both orientations', () => {
+  for (const shape of [SHAPES.vertical, SHAPES.horizontal]) {
+    const blocked = new Set(shape.peeks.map(p => `${p.line},${p.col}`))
+    for (let c = shape.hole.start; c <= shape.hole.end; c++) blocked.add(`${shape.hole.line},${c}`)
+    for (const p of shape.haul) {
+      for (const col of [p.col, p.col + 1]) {
+        expect(blocked.has(`${p.line},${col}`)).toBe(false)
+        expect(at(shape.mound, p.line, col) ?? ' ').not.toBe(' ')
+      }
+    }
+  }
+})
+
+test('a compacting mound and folded tree still fit the width, in both layouts', () => {
+  const ants = [ant({ id: 'main', color: '#ff5f5f', task: 'busy', busySeat: 0 })]
+  for (const frame of [0, 5, 13, 40, 99]) {
+    for (const width of [25, 40, 90]) {
+      const v = compose(NESTED, ants, [mainFold({ frame })], { width, height: 30, tick: frame, growth: GROWTH.length - 1 })
+      for (const l of v) expect(Array.from(lineText(l)).length <= width).toBe(true)
+      const h = compose(NESTED, ants, [mainFold({ frame })], { width, height: 5, tick: frame, orientation: 'horizontal', growth: GROWTH.length - 1 })
+      for (const l of h) expect(Array.from(lineText(l)).length <= width).toBe(true)
     }
   }
 })

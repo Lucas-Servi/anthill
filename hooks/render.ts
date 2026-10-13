@@ -286,7 +286,7 @@ const clipLine = (line: Line, width: number): Line => {
  * Each ant in the hole peeks from its own seat (seatPeeks), so one ant leaving
  * never makes another's antennae jump.
  */
-const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: Dug[]): Line[] => {
+const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: Dug[], refactor?: Refactor): Line[] => {
   const cells = moundCells(tick, shape, stage)
   const route = stageOf(shape, stage).tunnel
 
@@ -300,6 +300,45 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
     const { ch, color } = dugSprite(d.i, tick - d.at)
     paint(row, cell.col, ch, color)
   }
+
+  // The ants refactoring the anthill (main compacting): its loose light-shade cells and
+  // the tunnels dug through it filled in and packed tight, from the bottom up,
+  // `refactor.packed` of them so far (drawn over the tunnels: they're being filled).
+  if (refactor && refactor.packed > 0) {
+    const mask = stageOf(shape, stage).mask
+    const seen = new Set<string>()
+    const loose: { line: number; col: number }[] = []
+    const add = (p: { line: number; col: number }) => {
+      const key = `${p.line},${p.col}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        loose.push(p)
+      }
+    }
+    mask.forEach((keys, line) => Array.from(keys).forEach((k, col) => k === 'l' && add({ line, col })))
+    for (const d of dug) if (route[d.i]) add(route[d.i]!)
+    loose.sort((a, b) => b.line - a.line || a.col - b.col)
+    for (const p of loose.slice(0, refactor.packed)) {
+      const row = cells[p.line]
+      if (row) row[p.col] = { ch: PACKED_CHAR, color: MOUND_PALETTE.o }
+    }
+  }
+  // the refactoring workers, hauling clods up from the hump side toward the hole and going
+  // back empty: each bounces along shape.haul, offset from the others
+  if (refactor?.workers) {
+    const path = shape.haul
+    const period = Math.max(1, 2 * (path.length - 1))
+    for (let k = 0; k < WORKERS; k++) {
+      const m = (Math.floor(refactor.workers.frame / WORKER_TICKS) + Math.floor((k * period) / WORKERS)) % period
+      const carrying = m < path.length - 1
+      const p = path[carrying ? m : period - m]
+      const row = p && cells[p.line]
+      if (!p || !row) continue
+      if (carrying) paint(row, p.col, CLOD, MOUND_PALETTE.T!)
+      paint(row, p.col + 1, WORKER, refactor.workers.color)
+    }
+  }
+
   // busy ants (no file to point to), as a dot digging through the mound body. seatOrbits
   // already keeps their seats spaced apart, so unlike the trail no two can ever land
   // on the same cell here (apart from a bounce at the tunnel's ends, briefly hiding one).
@@ -386,6 +425,21 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
 /** A busy ant's dot, digging through the mound body while it has no file to point to. */
 const BUSY_DOT = '•'
 
+/** A mound cell the refactoring ants have packed tight. */
+const PACKED_CHAR = '▒'
+/** A refactoring worker, and the clod of dirt it hauls. */
+const WORKER = 'o'
+const CLOD = '▪'
+/** How many workers haul while main compacts, and how many ticks each takes a step. */
+const WORKERS = 3
+const WORKER_TICKS = 2
+
+/**
+ * The ants refactoring the anthill while main's conversation is compacted: how many of its
+ * loose cells are packed tight so far, and the workers hauling (only while it runs).
+ */
+type Refactor = { packed: number; workers?: { frame: number; color: string } }
+
 /** Columns `start` (inclusive) to `end` (exclusive) of one mound line, held by an ant. */
 type Span = { start: number; end: number }
 
@@ -436,25 +490,123 @@ const overlayLine = (base: string, overlays: { col: number; glyph: string; color
   return line
 }
 
-/** How many ticks between fold stages shrinking by one branch. */
-const FOLD_STAGE_TICKS = 3
+/** How many ticks each fold step takes: one depth level of the tree, or one top-level row. */
+const FOLD_STAGE_TICKS = 2
+
+/** Top-level rows a fully folded tree still shows. */
+const FOLDED_KEEP = 3
+
+/** How many ticks the mound takes to shrink back one growth stage while main compacts. */
+const MOUND_FOLD_TICKS = 2
 
 /**
- * One compaction's block: while it runs, a small generic tree (sized only by how many
- * messages there were, never their content — that's private) collapsing branch by
- * branch; once resolved, a single settled row for `f.settle` ticks, then gone.
+ * How many ticks a resolved compaction's "memory folded" header stays, the tree unfolding
+ * again under it: about 5s at 120ms a tick. Its first SETTLE_HOLD ticks it stays folded,
+ * so the header reads against the folded tree, then the tree unfolds evenly over the rest.
  */
-const foldLines = (f: Fold, indent: string): Line[] => {
-  const header: Line = [{ text: `${indent}${f.label} folding its memory…`, dim: true }]
-  if (f.after !== undefined) {
-    return [header, [{ text: `${indent}└── (summarized, ${f.before} → ${f.after})`, dim: true }]]
+export const SETTLE_TICKS = 40
+const SETTLE_HOLD = 10
+
+/**
+ * How main's compaction refactors the anthill at this moment: while it runs, the workers
+ * haul the hump away (it shrinks a stage every MOUND_FOLD_TICKS) and, once it's gone, pack
+ * the mound tighter a cell a tick; once resolved they're done, and the packing holds for
+ * SETTLE_HOLD ticks, then eases back as the tree unfolds. A skipped one packs nothing.
+ */
+const refactorOf = (f: Fold, grown: number, color: string): Refactor => {
+  const haulTicks = grown * MOUND_FOLD_TICKS
+  if (f.after === undefined) return { packed: Math.max(0, f.frame - haulTicks), workers: { frame: f.frame, color } }
+  if (f.after === f.before) return { packed: 0 }
+  const reached = Math.max(0, (f.peak ?? 0) - haulTicks)
+  const elapsed = SETTLE_TICKS - (f.settle ?? 0)
+  if (elapsed < SETTLE_HOLD) return { packed: reached }
+  return { packed: Math.round(reached * Math.max(0, 1 - (elapsed - SETTLE_HOLD) / (SETTLE_TICKS - SETTLE_HOLD))) }
+}
+
+/** The spinner a running compaction's header turns. */
+const FOLD_SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+
+/** How many fold steps fold the whole tree: each depth level, then the top-level rows down to FOLDED_KEEP. */
+const foldTotal = (rows: Row[]): number => {
+  const maxDepth = rows.reduce((m, r) => Math.max(m, r.depth), 0)
+  const top = rows.filter(r => r.depth === 0).length
+  return maxDepth + Math.max(0, top - FOLDED_KEEP)
+}
+
+/**
+ * How many fold steps the tree has taken at this moment of main's compaction: one more
+ * every FOLD_STAGE_TICKS while it runs; once resolved, it holds where it got to for
+ * SETTLE_HOLD ticks, then unfolds evenly so it's whole again as the header leaves.
+ */
+const foldSteps = (f: Fold | undefined, total: number): number => {
+  if (!f) return 0
+  if (f.after === undefined) return Math.min(total, Math.floor(f.frame / FOLD_STAGE_TICKS))
+  const reached = Math.min(total, Math.floor((f.peak ?? 0) / FOLD_STAGE_TICKS))
+  const elapsed = SETTLE_TICKS - (f.settle ?? 0)
+  if (elapsed < SETTLE_HOLD) return reached
+  return Math.round(reached * Math.max(0, 1 - (elapsed - SETTLE_HOLD) / (SETTLE_TICKS - SETTLE_HOLD)))
+}
+
+/**
+ * The tree folded `steps` steps: its deepest level tucks away into its folders first, then
+ * the next, until only top-level rows are left; those then fold away from the bottom until
+ * FOLDED_KEEP remain. A `pinned` row (an ant stands on it), and the folders above it, never
+ * fold away. Says, for each row, whether it shows and how many rows are tucked away right
+ * beneath it, and how many top-level rows (subtrees and all) folded away below the rest.
+ */
+export function foldTree(rows: Row[], steps: number, pinned: Set<number>): { shown: boolean[]; tucked: number[]; folded: number } {
+  const maxDepth = rows.reduce((m, r) => Math.max(m, r.depth), 0)
+  const cut = maxDepth - Math.min(Math.max(0, steps), maxDepth)
+  const tops = rows.flatMap((r, i) => (r.depth === 0 ? [i] : []))
+  const topHide = Math.min(Math.max(0, steps - maxDepth), Math.max(0, tops.length - FOLDED_KEEP))
+  const firstHiddenTop = topHide > 0 ? tops[tops.length - topHide]! : rows.length
+
+  // a pinned row's folders, all the way up, stay too
+  const keep = new Set<number>()
+  for (const i of pinned) {
+    let depth = rows[i]?.depth ?? -1
+    keep.add(i)
+    for (let j = i - 1; j >= 0 && depth > 0; j--) {
+      if (rows[j]!.depth < depth) {
+        keep.add(j)
+        depth = rows[j]!.depth
+      }
+    }
   }
-  const branches = Math.min(3, Math.max(1, f.before))
-  const open = Math.max(1, branches - Math.floor(f.frame / FOLD_STAGE_TICKS))
-  const body = Array.from({ length: open }, (_, i): Line => [
-    { text: `${indent}${i === open - 1 ? '└── ' : '├── '}…`, dim: true },
-  ])
-  return [header, ...body]
+
+  const shown = rows.map((r, i) => keep.has(i) || (r.depth <= cut && i < firstHiddenTop))
+  const tucked = rows.map(() => 0)
+  let folded = 0
+  const chain: number[] = [] // chain[d]: the latest row seen at depth d, the folders above the current row
+  rows.forEach((r, i) => {
+    if (!shown[i]) {
+      let owner = -1
+      for (let d = r.depth - 1; d >= 0; d--) {
+        if (chain[d] !== undefined && shown[chain[d]!]) {
+          owner = chain[d]!
+          break
+        }
+      }
+      if (owner >= 0) tucked[owner]!++
+      else folded++
+    }
+    chain[r.depth] = i
+    chain.length = r.depth + 1
+  })
+  return { shown, tucked, folded }
+}
+
+/**
+ * One compaction's header line, in its ant's color: while it runs, "<label> folding its
+ * memory" with a spinner turning; once resolved, how many messages it folded into how
+ * many, until it leaves. Never anything of the messages themselves: that's private.
+ */
+const foldHeader = (f: Fold, indent: string, color: string | undefined): Line => {
+  if (f.after === undefined) {
+    return [{ text: `${indent}${f.label} folding its memory `, color, dim: !color }, { text: FOLD_SPIN[f.frame % FOLD_SPIN.length]!, color, bold: true }]
+  }
+  if (f.after === f.before) return [{ text: `${indent}${f.label}: nothing to fold`, dim: true }]
+  return [{ text: `${indent}${f.label}'s memory folded: ${f.before} → ${f.after} messages`, color, bold: true, dim: !color }]
 }
 
 /**
@@ -551,12 +703,18 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const { width, height } = opts
   const orientation = opts.orientation ?? 'vertical'
   const shape = SHAPES[orientation]
-  const stage = shape.stages.indexOf(stageOf(shape, opts.growth ?? 0))
+  // While main compacts, the mound shrinks back a stage every MOUND_FOLD_TICKS (the
+  // conversation it measures is being folded away); once resolved, growth itself is 0.
+  const mainFold = folds.find(f => f.isMain)
+  const grown = shape.stages.indexOf(stageOf(shape, opts.growth ?? 0))
+  const stage = mainFold && mainFold.after === undefined ? Math.max(0, grown - Math.floor(mainFold.frame / MOUND_FOLD_TICKS)) : grown
 
   // -- mound block --
-  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [])
+  const mainColor = ants.find(a => a.id === mainFold?.id)?.color ?? MOUND_PALETTE.t!
+  const refactor = mainFold ? refactorOf(mainFold, grown, mainColor) : undefined
+  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor)
   const indent = ' '.repeat(TREE_INDENT)
-  const foldBlock: Line[] = folds.flatMap(f => foldLines(f, indent))
+  const foldBlock: Line[] = folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))
 
   // -- legend block --
   const legend = opts.legend === false ? [] : legendLines(ants, width, opts.tick)
@@ -627,9 +785,24 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   // at home) still stays in view. The mound and its trail always show regardless.
   let lowest = -1
   for (const rowIdx of byRow.keys()) lowest = Math.max(lowest, rowIdx)
-  const anchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
+  const rowAnchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
+
+  // -- the tree folding up while main compacts (and unfolding after) --
+  const steps = foldSteps(mainFold, foldTotal(rows))
+  let visible = treeLines
+  let anchor = rowAnchor
+  if (steps > 0) {
+    const { shown, tucked, folded } = foldTree(rows, steps, new Set(byRow.keys()))
+    visible = []
+    treeLines.forEach((line, i) => {
+      if (i === rowAnchor) anchor = visible.length
+      if (!shown[i]) return
+      visible.push(tucked[i]! > 0 ? [...line, { text: ` +${tucked[i]}`, dim: true }] : line)
+    })
+    if (folded > 0) visible.push([{ text: `${indent}… ${folded} folded away`, dim: true }])
+  }
 
   return orientation === 'horizontal'
-    ? composeHorizontal(mound, foldBlock, legend, treeLines, indent, anchor, width, height, stageOf(shape, stage).mound)
-    : composeVertical(mound, foldBlock, legend, treeLines, indent, anchor, width, height)
+    ? composeHorizontal(mound, foldBlock, legend, visible, indent, anchor, width, height, stageOf(shape, stage).mound)
+    : composeVertical(mound, foldBlock, legend, visible, indent, anchor, width, height)
 }
