@@ -181,6 +181,22 @@ export const antGlyph = (breed: Breed, task: Task, frame: number): string => {
   return pick(WALK[breed], parity)
 }
 
+// ---- mishaps ---------------------------------------------------------------
+
+/** The color a mishap or flash shows: a failed call reads redder than a denied one. */
+export const MISHAP_COLORS: Record<'error' | 'denied', string> = { error: '#ff4d4d', denied: '#ffb000' }
+
+/** The trailing marker a mishap or flash shows: 'x' for an error, '!' for a denial. */
+export const MISHAP_MARK: Record<'error' | 'denied', string> = { error: 'x', denied: '!' }
+
+/**
+ * The color an ant is drawn in on this frame: its own, unless it has a mishap, in
+ * which case it blinks every other frame between that and the mishap's own color —
+ * on the trail, on tree rows and in the hole alike, so the stumble reads as a change
+ * to the ant itself rather than a steady recolor.
+ */
+const antColor = (a: Ant): string => (a.mishap && a.frame % 2 === 1 ? MISHAP_COLORS[a.mishap.kind] : a.color)
+
 // ---- work/build effects ---------------------------------------------------
 
 const SPARKS = ['*', '+', 'x', "'"]
@@ -208,12 +224,21 @@ type Opts = {
   legend?: boolean
 }
 
-/** The legend: each ant's glyph, label and model, wrapped into lines `width` wide. */
+/**
+ * The legend: each ant's glyph, label and model, wrapped into lines `width` wide. One
+ * with a mishap gets a trailing ' x' (error) or ' !' (denied), in the mishap's own
+ * color, after its own (unblinking here) label text.
+ */
 export const legendLines = (ants: Ant[], width: number, tick: number): Line[] => {
-  const items = ants.map(a => ({
-    text: antGlyph(a.breed, a.task, tick) + ' ' + a.label + ' (' + a.breed + ')',
-    color: a.color,
-  }))
+  const items = ants.map(a => {
+    const mark = a.mishap ? ' ' + MISHAP_MARK[a.mishap.kind] : ''
+    return {
+      text: antGlyph(a.breed, a.task, tick) + ' ' + a.label + ' (' + a.breed + ')' + mark,
+      color: a.color,
+      mark,
+      markColor: a.mishap ? MISHAP_COLORS[a.mishap.kind] : undefined,
+    }
+  })
   const legend: Line[] = []
   let cur: Line = []
   let curW = 0
@@ -228,7 +253,12 @@ export const legendLines = (ants: Ant[], width: number, tick: number): Line[] =>
       cur.push({ text: '  ', dim: true })
       curW += 2
     }
-    cur.push({ text: item.text, color: item.color })
+    if (item.mark) {
+      cur.push({ text: item.text.slice(0, item.text.length - item.mark.length), color: item.color })
+      cur.push({ text: item.mark, color: item.markColor })
+    } else {
+      cur.push({ text: item.text, color: item.color })
+    }
     curW += item.text.length
   }
   if (cur.length > 0) legend.push(cur)
@@ -273,10 +303,13 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
   // busy ants (no file to point to), as a dot digging through the mound body. seatOrbits
   // already keeps their seats spaced apart, so unlike the trail no two can ever land
   // on the same cell here (apart from a bounce at the tunnel's ends, briefly hiding one).
+  // One with a mishap digs its marker instead of the plain dot, in the mishap's own color.
   for (const a of ants) {
     const cell = tunnelCellFor(a, route)
     const row = cell && cells[cell.line]
-    if (cell && row) paint(row, cell.col, BUSY_DOT, a.color)
+    if (!cell || !row) continue
+    if (a.mishap) paint(row, cell.col, MISHAP_MARK[a.mishap.kind], MISHAP_COLORS[a.mishap.kind])
+    else paint(row, cell.col, BUSY_DOT, a.color)
   }
 
   let inMouth = false
@@ -284,7 +317,7 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
     const at = a.peek === undefined ? undefined : shape.peeks[a.peek]
     const row = at && cells[at.line]
     if (!at || !row) continue
-    paint(row, at.col, peekGlyph(a.frame), a.color, true)
+    paint(row, at.col, peekGlyph(a.frame), antColor(a), true)
     if (at.line === shape.hole.line) inMouth = true
   }
   // Antennae darken their whole mouth cell (it keeps the hole's ground); the rest of
@@ -341,7 +374,7 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
       const width = Array.from(glyph).length
       if (want < 0) want = glyphStart(point, width)
       const start = freeStart(spans, want, width)
-      paint(row, start, glyph, a.color)
+      paint(row, start, glyph, antColor(a))
       spans.push({ start, end: start + width })
       want = start + width
     }
@@ -544,34 +577,46 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
     const gutterAnts = here.filter(a => a.task === 'walking' || a.task === 'returning')
     const standingAnts = here.filter(a => a.task === 'working' || a.task === 'building')
 
+    // A walking/returning (or working/building) ant with a mishap trails a marker right
+    // after its own glyph, for as long as the mishap lasts.
+    const mishapMark = (a: Ant): string => (a.mishap ? MISHAP_MARK[a.mishap.kind] : '')
+
     // A gutter ant still easing toward this row's depth is drawn climbing down the
     // shallower ancestor's trunk column instead of after the row's own full prefix.
+    // Its mishap mark still trails right after its glyph here too, same as everywhere
+    // else an ant with a mishap appears on a tree row.
     const climbing = gutterAnts.filter(a => a.climbDepth !== undefined && a.climbDepth < row.depth)
     const walking = gutterAnts.filter(a => !climbing.includes(a))
     const baseText = indent + steps.join('')
     const overlays = climbing.map(a => ({
       col: indent.length + steps.slice(0, a.climbDepth!).join('').length,
-      glyph: antGlyph(a.breed, a.task, a.frame),
-      color: a.color,
+      glyph: antGlyph(a.breed, a.task, a.frame) + mishapMark(a),
+      color: antColor(a),
     }))
 
     const line: Line = overlays.length > 0 ? overlayLine(baseText, overlays) : [{ text: baseText, dim: true }]
-    for (const a of walking) line.push({ text: antGlyph(a.breed, a.task, a.frame) + ' ', color: a.color })
+    for (const a of walking) {
+      line.push({ text: antGlyph(a.breed, a.task, a.frame) + mishapMark(a) + ' ', color: antColor(a) })
+    }
 
     if (isBuilt(row)) {
-      const highlighted = standingAnts[0]
       const name = row.isDir ? row.name + '/' : row.name
-      line.push(
-        highlighted
-          ? { text: name, color: highlighted.color, bold: true }
-          : { text: name, bold: row.isDir },
-      )
+      if (row.flash) {
+        line.push({ text: name + ' ' + MISHAP_MARK[row.flash.kind], color: MISHAP_COLORS[row.flash.kind], bold: true })
+      } else {
+        const highlighted = standingAnts[0]
+        line.push(
+          highlighted
+            ? { text: name, color: antColor(highlighted), bold: true }
+            : { text: name, bold: row.isDir },
+        )
+      }
     }
 
     for (const a of standingAnts) {
-      line.push({ text: ' ' + antGlyph(a.breed, a.task, a.frame), color: a.color })
+      line.push({ text: ' ' + antGlyph(a.breed, a.task, a.frame) + mishapMark(a), color: antColor(a) })
       const fx = workFx(a.task, a.frame)
-      if (fx) line.push({ text: fx, color: a.color, dim: true })
+      if (fx) line.push({ text: fx, color: antColor(a), dim: true })
     }
 
     return line

@@ -1,6 +1,14 @@
 /** Which ant body an agent gets, from the model it runs on. */
 export type Breed = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'other'
 
+/**
+ * A tool call gone wrong: refused (by the permission prompt, a hook, managed settings)
+ * or errored (the tool threw, was interrupted, or answered an error; a rejected call
+ * counts as this too). `ticks` is how many simulation ticks are left to show it before
+ * it fades away (see ants.ts's MISHAP_TICKS), decremented once a tick by step().
+ */
+export type Mishap = { kind: 'error' | 'denied'; ticks: number }
+
 /** One visible line of the file tree, in display order (pre-order, dirs first). */
 export type Row = {
   /** Path relative to the session's cwd, `/`-separated, no leading `./`. */
@@ -16,6 +24,11 @@ export type Row = {
    * Absent once complete (or for rows that already existed).
    */
   built?: number
+  /**
+   * Set when a tool call on this row's path just failed or was denied: its name
+   * flashes in the mishap's color for as long as this lasts, then fades.
+   */
+  flash?: Mishap
 }
 
 export type Task = 'home' | 'walking' | 'working' | 'building' | 'returning' | 'busy'
@@ -65,6 +78,21 @@ export type Ant = {
   climbDepth?: number
   /** Remove the ant once it is back home (its subagent finished). */
   leaving?: boolean
+  /**
+   * The simulation tick at the last event seen for this ant's id (a
+   * tool.call, turn.step or agent.spawn touching it); session.start backfills it to
+   * the just-loaded tick for an ant saved before this field existed, so it's never
+   * missing by the time reconcile() looks at it. Lets reconcile() tell a subagent
+   * the engine still runs (but isn't in `$.agent.list()`, e.g. a workflow's)
+   * from one that's gone quiet for good.
+   */
+  seenAt?: number
+  /**
+   * Set when its last tool call failed or was denied: the ant stumbles, dropping its
+   * load (its job is finished at once, same as a clean call) and heads home, blinking
+   * between its own color and the mishap's for as long as this lasts, then fades.
+   */
+  mishap?: Mishap
 }
 
 /**

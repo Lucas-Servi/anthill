@@ -6,8 +6,9 @@ crawling its branches:
 
 - **Read / Edit / Grep / Glob**: the ant walks to that file or directory and works on it.
 - **Write to a new file**: the ant walks there and builds the new branch, piece by piece.
-- Ants climb out of the hole on top of the anthill and crawl down its side onto the tree. When the tool call finishes, the ant climbs back up and into the hole, where its antennae peek out until its next job. A subagent's ant leaves the colony when its work is done.
+- Ants climb out of the hole on top of the anthill and crawl down its side onto the tree. When the tool call finishes, the ant climbs back up and into the hole, where its antennae peek out until its next job. A subagent's ant leaves the colony when its work is done — and also when the subagent itself stopped, failed or was killed, even with no final turn to say so.
 - **Bash, WebSearch, an MCP tool, or just thinking** (no file to point to): the ant stays inside the mound, shown as a small dot of its own color digging through the mound's body along a winding tunnel, so it never looks as idle as a truly resting ant. What it digs changes the mound until it next resets (see below): packed red tunnel walls, nursery chambers of larvae, roots, and fungi that sprout and grow the longer the colony works.
+- **A tool call that errors or gets denied**: the ant stumbles, dropping its load and heading home, and the file's row flashes — both fade after a moment.
 - **`/compact`**: the file tree folds up while the conversation is summarized, then unfurls back once it resolves.
 - The mound itself grows as your context window fills, one step every 5% — a second hump rises beside it and spills over near the auto-compact threshold, and the tunnels dig on into it — then returns to its original shape once the conversation is compacted or cleared.
 

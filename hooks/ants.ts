@@ -1,11 +1,19 @@
+import type { AgentInfo } from 'claude-code'
 import type { Ant, Breed, Dug, Job, Row } from '../types'
 import { HOME, PEEKS, SUMMIT, TUNNEL_SEATS } from './mound'
-import { BUILD_STEPS, indexOf } from './tree'
+import { BUILD_STEPS, indexOf, isBuilt } from './tree'
 
 export { HOME, TRAIL_STEPS } from './mound'
 
 /** How many ticks a working ant lingers after arriving to a job already finished. */
 const WORK_BURST = 6
+
+/**
+ * How many ticks an ant's mishap, or a row's flash, shows before step() fades it away:
+ * about 1.5s at TICK_MS (120ms) a tick — long enough to read as a stumble, not so long
+ * it lingers after the ant has moved on.
+ */
+export const MISHAP_TICKS = 12
 
 /**
  * A walking ant leaves the hole only when no other ant is on the first GATE
@@ -142,6 +150,33 @@ export function dig(dug: Dug[], ants: Ant[], length: number, tick: number): Dug[
   return [...byIndex.values()].sort((x, y) => x.i - y.i)
 }
 
+/** Decrements an ant's mishap by one tick, dropping it once it reaches 0. */
+function fadeMishap(ant: Ant): Ant {
+  if (!ant.mishap) return ant
+  if (ant.mishap.ticks <= 1) {
+    const { mishap, ...rest } = ant
+    return rest
+  }
+  return { ...ant, mishap: { ...ant.mishap, ticks: ant.mishap.ticks - 1 } }
+}
+
+/**
+ * Decrements a row's flash by one tick, dropping it once it reaches 0 — but only once
+ * the row is actually built: a brand-new file's row stays hidden behind its own build
+ * animation for a few ticks after the flash is set (register.tsx sets it the moment a
+ * denied/errored Write resolves, which can be before the ant has even reached it), and
+ * burning the flash's budget down while nobody can see it would spend it before the
+ * name is ever drawn. Held, not reset: once the row is built it gets its full ticks.
+ */
+function fadeFlash(row: Row): Row {
+  if (!row.flash || !isBuilt(row)) return row
+  if (row.flash.ticks <= 1) {
+    const { flash, ...rest } = row
+    return rest
+  }
+  return { ...row, flash: { ...row.flash, ticks: row.flash.ticks - 1 } }
+}
+
 /** Clears `climbDepth` outright: the ant is standing on its row, not transiting. */
 function clearClimb(ant: Ant): Ant {
   if (ant.climbDepth === undefined) return ant
@@ -189,6 +224,60 @@ export function finish(ant: Ant, jobId: string): Ant {
 
 export function retire(ant: Ant): Ant {
   return { ...ant, leaving: true }
+}
+
+/** Statuses $.agent.list() reports for an agent that has stopped for good (barring a later message that resumes it under the same id). */
+const ENDED: ReadonlySet<AgentInfo['status']> = new Set(['completed', 'failed', 'killed'])
+
+/**
+ * How many ticks of silence (no tool.call/turn.step/agent.spawn seen for its id) a busy
+ * ant missing from $.agent.list() is given before reconcile() gives up on it: about 10
+ * minutes at TICK_MS (120ms) a tick — long enough that a Workflow's agent (never listed,
+ * even while running) isn't mistaken for one the engine simply dropped.
+ */
+export const STALE_TICKS = 5000
+
+/**
+ * Reconciles every ant but `mainId`'s against the engine's own list of agents, so one
+ * whose subagent stopped (or quietly vanished from the list for good) stops digging and
+ * leaves, rather than staying busy — and keeping the simulation ticking — forever.
+ *
+ * - Listed, ended (`completed`/`failed`/`killed`), not already leaving: retires it (a
+ *   busy ant heads straight home and is removed; a walking/working one keeps walking home
+ *   first, same as today's turn.complete path).
+ * - Listed `idle` (a teammate between turns, say): only stops it digging; it stays in the
+ *   colony, since a message may yet wake it under the same id.
+ * - Not listed at all, busy, and silent for over STALE_TICKS: retires it too — the one
+ *   case a Workflow's agent (never listed, even while running) can still hit, once it's
+ *   gone quiet long enough to be more likely gone than merely unlisted.
+ * - Anything else (running/pending/waiting, or a quiet non-busy ant): untouched.
+ *
+ * Returns the very same array when nothing changed, so a caller can skip publishing.
+ */
+export function reconcile(ants: Ant[], infos: AgentInfo[], tick: number, mainId: string): Ant[] {
+  let changed = false
+  const next = ants.map((ant): Ant => {
+    if (ant.id === mainId) return ant
+    const info = infos.find((i) => i.id === ant.id)
+    if (info) {
+      if (ENDED.has(info.status) && !ant.leaving) {
+        changed = true
+        return retire(clearBusy(ant))
+      }
+      if (info.status === 'idle') {
+        const cleared = clearBusy(ant)
+        if (cleared !== ant) changed = true
+        return cleared
+      }
+      return ant
+    }
+    if (isBusy(ant) && tick - (ant.seenAt ?? 0) > STALE_TICKS) {
+      changed = true
+      return retire(clearBusy(ant))
+    }
+    return ant
+  })
+  return changed ? next : ants
 }
 
 function setBuilt(rows: Row[], index: number, built: number): Row[] {
@@ -259,14 +348,16 @@ function holdsBack(ants: Ant[], at: number): boolean {
 export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
   // seat ants still in the hole (or orbiting it) before any leaves, so the rest keep the seats they're drawn in
   const ants = seatOrbits(seatPeeks(given))
-  let nextRows = rows
+  // a row's flash fades the same way, one tick at a time, regardless of what else happens to it below
+  let nextRows = rows.some((r) => r.flash) ? rows.map(fadeFlash) : rows
   const nextAnts: Ant[] = []
   /** Where each of nextAnts stood before this tick. */
   const from: number[] = []
   let canLeave = gateOpen(ants)
 
   for (const prev of ants) {
-    let ant: Ant = { ...prev, frame: prev.frame + 1 }
+    // the mishap fades on every tick regardless of task, so one that lingers home still clears
+    let ant: Ant = fadeMishap({ ...prev, frame: prev.frame + 1 })
     if (ant.at >= nextRows.length) ant.at = nextRows.length - 1
     if (ant.at < HOME) ant.at = HOME
     const start = ant.at
@@ -276,7 +367,11 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
     }
 
     if (ant.task === 'home') {
-      if (ant.leaving) continue // removed
+      // A retiring ant with a fresh mishap still lingers home, blinking, until the
+      // mishap fades on its own over MISHAP_TICKS (fadeMishap already ran above this
+      // tick) — otherwise retiring it (turn.complete, reconcile) the very same tick a
+      // mishap was set would delete the ant, mishap and all, before it's ever shown.
+      if (ant.leaving && !ant.mishap) continue // removed
       keep(ant)
       continue
     }

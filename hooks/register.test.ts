@@ -1,5 +1,6 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
+import { STALE_TICKS } from './ants'
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -92,20 +93,21 @@ const session = async (
   dirs: typeof DIRS,
   missing: string[],
   saved: {
-    rows?: { path: string; built?: number }[]
-    ants?: { id: string; at: number; task: string }[]
+    rows?: { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[]
+    ants?: { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[]
     folds?: { id: string; before: number; after?: number; settle?: number }[]
     layout?: 'side' | 'strip'
     growth?: number
     dug?: unknown[]
+    tick?: number
   }[] = [],
-  /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job. */
+  /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job, or to deny/error it. */
   toolCall: () => unknown = () => ({ result: 'ok' }),
 ) => {
   const clock = mock.clock(on)
   const latest = {
-    rows: [] as { path: string; built?: number }[],
-    ants: [] as { id: string; at: number; task: string }[],
+    rows: [] as { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[],
+    ants: [] as { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[],
     folds: [] as { id: string; before: number; after?: number; settle?: number }[],
     layout: 'side' as 'side' | 'strip',
     growth: 0,
@@ -225,6 +227,64 @@ test('a Bash call shows the ant busy, not idle, for its duration, and home again
   expect(await idles()).toBe(true)
 })
 
+test('a subagent killed without a turn.complete has its ant leave once a reconcile sweep sees it on agent.list', async ($, on) => {
+  on('agent.list', () => ({ value: [{ id: 'sub1', description: 'x', type: 'general-purpose', status: 'killed' }] }) as never)
+  const { clock, latest, idles } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'sleep 9', tool_use_id: 'b1', agentId: 'sub1' } as never)
+  // Bash has no file path: busy, with nothing to otherwise clear it (no turn.complete
+  // ever comes for this id, the bug a stopped/failed/killed subagent used to hit).
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy')
+
+  await clock.advance(120 * 40) // past a reconcile sweep (every 25 ticks) and the tick that removes it home
+  expect(latest.ants.some(a => a.id === 'sub1')).toBe(false)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(await idles()).toBe(true)
+})
+
+test('a running subagent\'s ant stays busy across a reconcile sweep', async ($, on) => {
+  on('agent.list', () => ({ value: [{ id: 'sub1', description: 'x', type: 'general-purpose', status: 'running' }] }) as never)
+  const { clock, latest } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'sleep 9', tool_use_id: 'b1', agentId: 'sub1' } as never)
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy')
+
+  await clock.advance(120 * 40) // well past several reconcile sweeps
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy')
+})
+
+test('an ant idled (not retired) by one reconcile sweep still leaves once a later sweep finds its agent ended, even though the colony went idle in between (regression)', async ($, on) => {
+  let status: 'idle' | 'killed' = 'idle'
+  on('agent.list', () => ({ value: [{ id: 'sub1', description: 'x', type: 'general-purpose', status }] }) as never)
+  const { clock, latest, idles } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'sleep 9', tool_use_id: 'b1', agentId: 'sub1' } as never)
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy')
+
+  await clock.advance(120 * 30) // past the first reconcile sweep: idled, not retired, still present
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('home')
+  expect(await idles()).toBe(true) // the colony really did go idle in between
+
+  // the agent later really ends, with nothing else around to make the colony busy
+  // again on its own and resume the periodic sweep
+  status = 'killed'
+  await clock.advance(120 * 1000)
+  expect(latest.ants.some(a => a.id === 'sub1')).toBe(false)
+})
+
+test('an ant saved before `seenAt` existed, busy, with the session\'s own persisted tick already past STALE_TICKS, isn\'t retired as silent-since-tick-0 on the very first reconcile sweep after loading (regression)', async ($, on) => {
+  on('agent.list', () => ({ value: [] }) as never) // never listed at all, e.g. a Workflow's agent, even while it's running
+  const bigTick = STALE_TICKS + 500
+  const ants = [
+    { id: 'main', label: 'main', breed: 'opus', color: '#ff5f5f', at: HOME, task: 'home', queue: [], doneIds: [], frame: 0 },
+    { id: 'sub1', label: 'agent', breed: 'other', color: '#5fff5f', at: HOME, task: 'busy', queue: [], doneIds: [], frame: 0 }, // predates `seenAt`
+  ]
+  const { clock, latest } = await session($, on, DIRS, [], [{ ants, tick: bigTick } as never])
+
+  await clock.advance(120 * 30) // past the first reconcile sweep after loading
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('busy') // still here, not wrongly retired as stale
+})
+
 test('turn.step marks the loop busy and passes its chunks through unmodified; turn.complete clears it', async ($, on) => {
   on('turn.complete', () => ({ text: '' }) as never)
   on('turn.step', async function* ($, e) {
@@ -257,6 +317,126 @@ test('a file tool call during an otherwise-busy turn takes over: busy becomes wa
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking')
   await clock.advance(120 * 30)
   expect(await pane.find({ text: 'main.ts' })).toBeDefined()
+})
+
+test('a Read the permission prompt denies flashes that file\'s row and gives the ant a mishap; both fade, and the ant still heads home', async ($, on) => {
+  const { clock, latest, idles } = await session($, on, DIRS, [], [], () => ({ deny: 'no' }))
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toMatchObject({ kind: 'denied' })
+  expect(latest.rows.find(r => r.path === 'src/main.ts')?.flash).toMatchObject({ kind: 'denied' })
+
+  await clock.advance(120 * 15) // past MISHAP_TICKS: both fade away on their own
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
+  expect(latest.rows.find(r => r.path === 'src/main.ts')?.flash).toBeUndefined()
+
+  await clock.advance(120 * 150) // generous: the ant still drops the job and walks all the way home
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(await idles()).toBe(true)
+})
+
+test('a Bash call whose tool errored gives the ant an \'error\' mishap, with no row to flash (no file path); it fades once the turn ends, and the clock idles', async ($, on) => {
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest, idles } = await session($, on, DIRS, [], [], () => ({ isError: true, result: 'boom', text: 'boom' }))
+
+  await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: 'b1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toMatchObject({ kind: 'error' })
+  expect(latest.rows.every(r => r.flash === undefined)).toBe(true)
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  // home, but the mishap keeps the clock ticking (not idle) until it fades
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeDefined()
+
+  await clock.advance(120 * 15)
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
+  expect(await idles()).toBe(true)
+})
+
+test('a rejected tool.call also gives the ant an \'error\' mishap, and still rethrows', async ($, on) => {
+  const { latest } = await session($, on, DIRS, [], [], () => {
+    throw new Error('boom')
+  })
+
+  await expect($.tool.call({ tool: 'Bash', command: 'false', tool_use_id: 'b1' } as never)).rejects.toThrow()
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toMatchObject({ kind: 'error' })
+})
+
+test('a successful call sets neither a mishap nor a flash', async ($, on) => {
+  const { latest } = await session($, on, DIRS, [])
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
+  expect(latest.rows.every(r => r.flash === undefined)).toBe(true)
+})
+
+test('a subagent\'s fresh mishap survives its turn ending right after (retire), fading over MISHAP_TICKS instead of vanishing on the very next tick (regression)', async ($, on) => {
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest, idles } = await session($, on, DIRS, [], [], () => ({ isError: true, result: 'boom', text: 'boom' }))
+
+  await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: 'b1', agentId: 'sub1' } as never)
+  expect(latest.ants.find(a => a.id === 'sub1')?.mishap).toMatchObject({ kind: 'error' })
+
+  // the agent's turn ends right after its failing call, the common case: register.tsx
+  // runs retire(clearBusy(ant)), which must not wipe the mishap out along with it
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', agentId: 'sub1' } as never)
+  expect(latest.ants.find(a => a.id === 'sub1')?.task).toBe('home')
+  expect(latest.ants.find(a => a.id === 'sub1')).toBeDefined()
+
+  await clock.advance(120) // one more tick: still there, the mishap only just fading
+  expect(latest.ants.find(a => a.id === 'sub1')).toBeDefined()
+
+  await clock.advance(120 * 15) // well past MISHAP_TICKS: now it's gone for good
+  expect(latest.ants.find(a => a.id === 'sub1')).toBeUndefined()
+  expect(await idles()).toBe(true)
+})
+
+test('a mishap from a queued (non-current) tool call doesn\'t paint onto the ant while its own, unrelated job is still live (regression)', async ($, on) => {
+  let calls = 0
+  let resolveA: (() => void) | undefined
+  const toolCall = () => {
+    calls++
+    if (calls === 1) return new Promise(resolve => { resolveA = () => resolve({ result: 'ok' }) })
+    return { deny: 'no' }
+  }
+  const { clock, latest } = await session($, on, DIRS, [], [], toolCall)
+
+  const callA = $.tool.call({ tool: 'Read', file_path: `${CWD}/README.md`, tool_use_id: 'rA' } as never)
+  await clock.advance(0) // let the hook's own pre-amble (assign, publish) land before A's call holds
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking') // took A over at once
+
+  await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'rB' } as never)
+  // B queues behind A (the ant is already walking) and is denied: its own row flashes,
+  // but the ant - still visibly on A, which never failed - isn't painted with B's mishap
+  expect(latest.rows.find(r => r.path === 'src/main.ts')?.flash).toMatchObject({ kind: 'denied' })
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking')
+
+  resolveA?.()
+  await callA
+})
+
+test('a mishap from a no-job call doesn\'t paint onto the ant while a separate file job of its own is still live (regression)', async ($, on) => {
+  let calls = 0
+  let resolveRead: (() => void) | undefined
+  const toolCall = () => {
+    calls++
+    if (calls === 1) return new Promise(resolve => { resolveRead = () => resolve({ result: 'ok' }) })
+    return { isError: true, result: 'boom', text: 'boom' }
+  }
+  const { clock, latest } = await session($, on, DIRS, [], [], toolCall)
+
+  const callRead = $.tool.call({ tool: 'Read', file_path: `${CWD}/README.md`, tool_use_id: 'r1' } as never)
+  await clock.advance(0)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking')
+
+  // a concurrent, no-file-path Bash call fails while the Read above is still in flight
+  await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: 'b1' } as never)
+  expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking') // still visibly on the Read
+
+  resolveRead?.()
+  await callRead
 })
 
 test('agent.spawn marks the spawning ant busy', async ($, on) => {

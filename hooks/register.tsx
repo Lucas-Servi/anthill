@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ant, Dug, Fold, Job, Layout, Row } from '../types'
+import type { Ant, Dug, Fold, Job, Layout, Mishap, Row } from '../types'
 import {
   HOME,
+  MISHAP_TICKS,
   assign,
   breedOf,
   clearBusy,
@@ -12,6 +13,7 @@ import {
   finish,
   markBusy,
   newAnt,
+  reconcile,
   retire,
   seatOrbits,
   seatPeeks,
@@ -30,6 +32,9 @@ const MAIN = 'main'
 const IDLE_WIGGLE_EVERY = 4
 // How many ticks a resolved compaction's settled "(summarized ...)" row holds before it disappears.
 const SETTLE_TICKS = 6
+// How often (in ticks) the tick loop sweeps $.agent.list() to retire ants whose subagent
+// stopped without a turn.complete: about 3s at TICK_MS.
+const RECONCILE_EVERY = 25
 // How many rows the strip above the prompt may use at most, mound+tree+button together.
 const STRIP_MAX_ROWS = 6
 
@@ -92,6 +97,40 @@ const antFor = (id: string, label = 'agent', model?: string): Ant => {
 
 const setAnt = (ant: Ant) => {
   ants = ants.map(a => (a.id === ant.id ? ant : a))
+}
+
+/**
+ * Stamps an ant with the current tick, so reconcile() can tell one that's gone quiet
+ * apart from one that's merely busy and unlisted (a Workflow's agent, say). Refreshed
+ * wherever tool.call, turn.step or agent.spawn touch an ant; harmless on main, which
+ * reconcile() never looks at.
+ */
+const touch = (ant: Ant): Ant => ({ ...ant, seenAt: tick })
+
+/** Guards runReconcile so two sweeps never overlap. */
+let reconciling = false
+
+/**
+ * Sweeps $.agent.list() and reconciles the ants as they stand once it resolves (not as
+ * they stood when this started) against it, publishing only if something actually
+ * changed. A failed list() call leaves the ants as they are, rather than retiring
+ * anything on a guess — there's always a next sweep.
+ */
+const runReconcile = async ($: EngineInterface) => {
+  if (reconciling) return
+  reconciling = true
+  try {
+    const infos = await $.agent.list()
+    const next = reconcile(ants, infos, tick, MAIN)
+    if (next !== ants) {
+      ants = next
+      await publish($)
+    }
+  } catch {
+    // Leave ants as they are; the next sweep gets another chance.
+  } finally {
+    reconciling = false
+  }
 }
 
 const listInto = async ($: EngineInterface, dir: string, depth: number) => {
@@ -158,9 +197,16 @@ export const register: Register = on => {
     const ran = await next(e)
     cwd = e.cwd.replace(/\/+$/, '')
     rows = await read($, rowsAtom)
-    // Ants saved by older versions sat at -1 for home; home is now inside the summit hole.
-    ants = (await read($, antsAtom)).map(a => (a.task === 'home' || a.at < HOME ? { ...a, at: HOME } : a))
     tick = await read($, tickAtom)
+    // Ants saved by older versions sat at -1 for home; home is now inside the summit
+    // hole. `seenAt` is newer still: an ant saved before it existed gets the
+    // just-loaded tick stamped on now, the same way `at` is normalized here, so a
+    // long-lived session's reconcile() doesn't mistake it for one that's been silent
+    // since tick 0 and retire it as stale on the very first sweep after this loads.
+    ants = (await read($, antsAtom)).map(a => {
+      const homed = a.task === 'home' || a.at < HOME ? { ...a, at: HOME } : a
+      return homed.seenAt === undefined ? { ...homed, seenAt: tick } : homed
+    })
     // A fold left with no `after` means the process died mid-compaction: nothing is
     // left to resolve it, so it would otherwise sit forever.
     folds = (await read($, foldsAtom)).filter(f => f.after !== undefined)
@@ -200,7 +246,9 @@ export const register: Register = on => {
     let idleTicks = 0
     $.clock.every(TICK_MS, () => {
       const busy =
-        ants.some(a => a.task !== 'home' || a.leaving) || rows.some(r => r.built !== undefined) || folds.length > 0
+        ants.some(a => a.task !== 'home' || a.leaving || a.mishap) ||
+        rows.some(r => r.built !== undefined || r.flash) ||
+        folds.length > 0
       if (!busy) {
         // Nothing to crawl to: the ants resting in the hole still look busy down
         // there, with a slow antennae wiggle. The simulation tick itself (and
@@ -212,6 +260,13 @@ export const register: Register = on => {
           void update($, antsAtom, () => ants)
           $.ui.invalidate('ui.render')
         }
+        // A subagent's ant that reconcile() only idled (not retired, since a message
+        // may yet resume it) stops counting as busy at once, so if it was the only
+        // thing keeping the colony busy, nothing above would ever check on it again.
+        // A lighter sweep on the same cadence, even while idle, still does: if its
+        // agent later really did end, this retires it, `leaving` makes the colony
+        // busy again on the very next firing, and the loop above takes it home.
+        if (idleTicks % RECONCILE_EVERY === 0 && ants.some(a => a.id !== MAIN)) void runReconcile($)
         return
       }
       idleTicks = 0
@@ -223,6 +278,10 @@ export const register: Register = on => {
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         .filter(f => f.settle === undefined || f.settle > 0)
+      // Every few seconds, while some subagent's ant exists, check it's still really
+      // there: one that was stopped, failed or killed without a turn.complete would
+      // otherwise dig (and keep this very loop ticking) forever.
+      if (tick % RECONCILE_EVERY === 0 && ants.some(a => a.id !== MAIN)) void runReconcile($)
       void publish($)
     })
 
@@ -243,14 +302,14 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     const parent = ants.find(a => a.id === (e.parentAgentId ?? MAIN))
-    if (parent) setAnt(markBusy(parent))
+    if (parent) setAnt(touch(markBusy(parent)))
     const started = await next(e)
     if (started.agentId) {
       const ant = antFor(started.agentId, e.subagentType || 'agent', started.model)
       // Busy from frame one: a background subagent may run for minutes before its
       // first tool.call/turn.step lands, and markBusy is a no-op on anything already
       // past 'home', so this is harmless if it's ever already further along.
-      setAnt(markBusy({ ...ant, label: e.subagentType || ant.label, breed: breedOf(started.model) }))
+      setAnt(touch(markBusy({ ...ant, label: e.subagentType || ant.label, breed: breedOf(started.model) })))
     }
     await publish($)
     return started
@@ -264,18 +323,44 @@ export const register: Register = on => {
     // busy, with no file to point to.
     const job = await jobOf($, e as unknown as Record<string, unknown>)
     const ant = antFor(id, id === MAIN ? 'main' : 'agent')
-    setAnt(job ? assign(ant, job) : markBusy(ant))
+    setAnt(touch(job ? assign(ant, job) : markBusy(ant)))
     await publish($)
+    // What next(e) settles to: a mishap to show on the ant (and the job's row, if any),
+    // or undefined for an answered, non-error call. A rejection counts as an error too.
+    let mishap: Mishap | undefined
     try {
-      return await next(e)
+      const result = await next(e)
+      if (result.deny !== undefined) mishap = { kind: 'denied', ticks: MISHAP_TICKS }
+      else if (result.isError) mishap = { kind: 'error', ticks: MISHAP_TICKS }
+      return result
+    } catch (err) {
+      mishap = { kind: 'error', ticks: MISHAP_TICKS }
+      throw err
     } finally {
+      const cur = ants.find(a => a.id === id)
       if (job) {
-        const cur = ants.find(a => a.id === id)
-        if (cur) setAnt(finish(cur, job.id))
+        // mishap and all, the job is finished exactly as on a clean call: the ant
+        // drops it and heads home, same as it always has. The ant itself only takes
+        // the mishap when this call's job is the one it's actually, visibly on right
+        // now — a second, queued call (two parallel Reads, say) failing while the
+        // first is still in flight would otherwise paint the mishap onto an ant that's
+        // plainly walking/working an unrelated, unaffected job; the row's own flash
+        // below is signal enough for a job that was never shown on the ant at all.
+        const onAnt = mishap !== undefined && cur?.job?.id === job.id
+        if (cur) setAnt(touch(finish(onAnt ? { ...cur, mishap } : cur, job.id)))
+        if (mishap) {
+          const at = indexOf(rows, job.path)
+          if (at !== -1) rows = rows.map((r, i) => (i === at ? { ...r, flash: mishap! } : r))
+        }
+        await publish($)
+      } else if (mishap) {
+        // Likewise: a no-job call (Bash, say) only decorates the ant when it has no
+        // separate file job of its own in progress to misattribute this failure to.
+        if (cur && !cur.job) setAnt({ ...cur, mishap })
         await publish($)
       }
-      // A no-job call's busy state stays set until turn.complete, or a later
-      // tool.call on this id brings a real job (assign() takes over at once).
+      // A no-job, mishap-free call's busy state stays set until turn.complete, or a
+      // later tool.call on this id brings a real job (assign() takes over at once).
     }
   }).catch(($, e, next) => next(e))
 
@@ -286,7 +371,7 @@ export const register: Register = on => {
     // /model switch between turns should show up right away, not only after
     // the next turn.complete (seen live: /model to Opus mid-session left the
     // legend reading "main (sonnet)" for the whole next, still-running turn).
-    setAnt(id === MAIN ? { ...ant, breed: breedOf(e.model) } : ant)
+    setAnt(touch(id === MAIN ? { ...ant, breed: breedOf(e.model) } : ant))
     await publish($)
     return yield* next(e)
   })

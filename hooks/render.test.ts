@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { MOUND, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
+import { MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
 import {
   GROWTH,
   GROWTH_STAGES,
@@ -658,6 +658,18 @@ test('a non-climbing ant (climbDepth absent) renders exactly as before: appended
   expect(text.indexOf(glyph) < text.indexOf('main.ts')).toBe(true)
 })
 
+test('a climbing ant with a mishap still trails its marker right after the overlaid glyph, same as a non-climbing one (regression)', () => {
+  const a = ant({ id: 'a1', task: 'walking', at: 1, climbDepth: 0, color: '#123456', mishap: { kind: 'error', ticks: 5 } })
+  const glyph = antGlyph('sonnet', 'walking', 0)
+  for (const width of [10, 20, 60]) {
+    const lines = compose(TREE, [a], [], { width, height: 20, tick: 0 })
+    for (const l of lines) expect(Array.from(lineText(l)).length <= width).toBe(true)
+  }
+  const lines = compose(TREE, [a], [], { width: 60, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('main.ts'))!
+  expect(lineText(treeLine).includes(glyph + MISHAP_MARK.error)).toBe(true)
+})
+
 test('compose keeps the main ant\'s row visible, over a farther busy ant, when both can\'t fit', () => {
   const tall: Row[] = Array.from({ length: 50 }, (_, i) => row({ name: `f${i}.ts`, path: `f${i}.ts` }))
   const ants: Ant[] = [ant({ id: 'main', at: 2, task: 'working' }), ant({ id: 'sub', at: 45, task: 'working' })]
@@ -898,4 +910,135 @@ test('stageOf clamps a stage out of range, or not a whole number, to a real one'
   expect(stageOf(shape, -3)).toBe(shape.stages[0])
   expect(stageOf(shape, 999)).toBe(shape.stages.at(-1))
   expect(stageOf(shape, Number.NaN)).toBe(shape.stages[0])
+})
+
+// ---- mishaps and flashes ----------------------------------------------------
+
+test('a busy ant\'s tunnel dot with a mishap is drawn as its marker, in the mishap\'s color, instead of the plain dot', () => {
+  const busy = seatOrbits([markBusy(ant({ color: '#5f87ff', mishap: { kind: 'error', ticks: 5 } }))])[0]!
+  const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 0 })
+  const hit = TUNNEL.filter(p => cells(lines[p.line])[p.col]?.color === MISHAP_COLORS.error)
+  expect(hit.length).toBe(1)
+  expect(cells(lines[hit[0]!.line])[hit[0]!.col]?.ch).toBe(MISHAP_MARK.error)
+  // never drawn in the ant's own color while the mishap lasts
+  expect(TUNNEL.some(p => cells(lines[p.line])[p.col]?.color === '#5f87ff')).toBe(false)
+})
+
+test('a denied busy ant\'s dot shows "!" instead of "x"', () => {
+  const busy = seatOrbits([markBusy(ant({ color: '#5f87ff', mishap: { kind: 'denied', ticks: 5 } }))])[0]!
+  const lines = compose(TREE, [busy], [], { width: 40, height: 20, tick: 0 })
+  const hit = TUNNEL.filter(p => cells(lines[p.line])[p.col]?.color === MISHAP_COLORS.denied)
+  expect(hit.length).toBe(1)
+  expect(cells(lines[hit[0]!.line])[hit[0]!.col]?.ch).toBe(MISHAP_MARK.denied)
+})
+
+test('an ant with a mishap blinks every other frame between its own color and the mishap\'s, on the trail', () => {
+  const k = 1
+  const own = '#111111'
+  const colorAt = (frame: number): string | undefined => {
+    const a = ant({ id: 'm', breed: 'opus', task: 'walking', at: k - TRAIL_STEPS, color: own, frame, mishap: { kind: 'denied', ticks: 5 } })
+    const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })
+    return cells(lines[TRAIL[k]!.line]).find(c => c.color === own || c.color === MISHAP_COLORS.denied)?.color
+  }
+  expect(colorAt(0)).toBe(own)
+  expect(colorAt(1)).toBe(MISHAP_COLORS.denied)
+  expect(colorAt(2)).toBe(own)
+  expect(colorAt(3)).toBe(MISHAP_COLORS.denied)
+})
+
+test('an ant with a mishap peeking from the hole blinks the same way as on the trail', () => {
+  const own = '#5f87ff'
+  const colorAt = (frame: number): string | undefined => {
+    const a = ant({ id: 'm', color: own, frame, mishap: { kind: 'error', ticks: 5 } })
+    const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })
+    const slot = PEEKS[0]!
+    return cells(lines[slot.line])[slot.col]?.color
+  }
+  expect(colorAt(0)).toBe(own)
+  expect(colorAt(1)).toBe(MISHAP_COLORS.error)
+})
+
+test('a walking ant with a mishap trails a marker right after its glyph on a tree row', () => {
+  const rows: Row[] = [row({ name: 'util.ts', path: 'util.ts' })]
+  const a = ant({ id: 'a1', task: 'walking', at: 0, frame: 0, mishap: { kind: 'error', ticks: 5 } })
+  const lines = compose(rows, [a], [], { width: 60, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('util.ts'))!
+  const glyph = antGlyph('sonnet', 'walking', 0)
+  expect(lineText(treeLine).includes(glyph + MISHAP_MARK.error + ' util.ts')).toBe(true)
+})
+
+test('a working ant with a mishap trails a marker right after its glyph on a tree row', () => {
+  const rows: Row[] = [row({ name: 'main.ts', path: 'main.ts' })]
+  const a = ant({ id: 'a1', task: 'working', at: 0, frame: 0, mishap: { kind: 'denied', ticks: 5 } })
+  const lines = compose(rows, [a], [], { width: 60, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('main.ts'))!
+  const glyph = antGlyph('sonnet', 'working', 0)
+  expect(lineText(treeLine).includes(glyph + MISHAP_MARK.denied)).toBe(true)
+})
+
+test('a row with a flash draws its name bold in the flash\'s color, with a trailing marker', () => {
+  const rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'error', ticks: 5 } }]
+  const lines = compose(rows, [], [], { width: 40, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('a.ts'))!
+  const seg = treeLine.find(s => s.text.includes('a.ts'))!
+  expect(seg.bold).toBe(true)
+  expect(seg.color).toBe(MISHAP_COLORS.error)
+  expect(lineText(treeLine).includes('a.ts ' + MISHAP_MARK.error)).toBe(true)
+})
+
+test('a denied row\'s flash shows "!" in the denied color instead', () => {
+  const rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'denied', ticks: 5 } }]
+  const lines = compose(rows, [], [], { width: 40, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('a.ts'))!
+  const seg = treeLine.find(s => s.text.includes('a.ts'))!
+  expect(seg.color).toBe(MISHAP_COLORS.denied)
+  expect(lineText(treeLine).includes('a.ts ' + MISHAP_MARK.denied)).toBe(true)
+})
+
+test('a row\'s flash takes precedence over an ant standing there and highlighting its name', () => {
+  const rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'error', ticks: 5 } }]
+  const standing = ant({ id: 'w', task: 'working', at: 0, color: '#5fff5f' })
+  const lines = compose(rows, [standing], [], { width: 40, height: 20, tick: 0 })
+  const treeLine = lines.find(l => lineText(l).includes('a.ts'))!
+  const seg = treeLine.find(s => s.text.includes('a.ts'))!
+  expect(seg.color).toBe(MISHAP_COLORS.error)
+})
+
+test('the legend item of an ant with a mishap gets a trailing marker in the mishap\'s color', () => {
+  const ants: Ant[] = [ant({ id: 'a1', label: 'worker', breed: 'opus', mishap: { kind: 'denied', ticks: 5 } })]
+  const lines = legendLines(ants, 80, 0)
+  const text = lineText(lines[0]!)
+  expect(text).toContain('worker (opus) ' + MISHAP_MARK.denied)
+  const markSeg = lines[0]!.find(s => s.text === ' ' + MISHAP_MARK.denied)
+  expect(markSeg?.color).toBe(MISHAP_COLORS.denied)
+})
+
+test('an ant with no mishap gets no trailing marker in the legend', () => {
+  const ants: Ant[] = [ant({ id: 'a1', label: 'worker', breed: 'opus' })]
+  const text = lineText(legendLines(ants, 80, 0)[0]!)
+  expect(text).toBe(antGlyph('opus', 'home', 0) + ' worker (opus)')
+})
+
+test('every line still fits the width with a mishap ant blinking and a row flashing, markers and all', () => {
+  const rows: Row[] = [
+    row({ name: 'deeply', path: 'deeply', isDir: true, isOpen: true }),
+    row({ name: 'nested', path: 'deeply/nested', depth: 1, isDir: true, isOpen: true }),
+    { ...row({ name: 'a_rather_long_file_name.ts', path: 'deeply/nested/a_rather_long_file_name.ts', depth: 2 }), flash: { kind: 'error', ticks: 5 } },
+    row({ name: 'README.md', path: 'README.md' }),
+  ]
+  const crowd: Ant[] = [
+    { ...ant({ id: 'h', label: 'main' }), mishap: { kind: 'denied', ticks: 5 } },
+    ...TRAIL.map((_, k) => ({
+      ...ant({ id: `t${k}`, label: `trail${k}`, breed: BREEDS[k % BREEDS.length]!, task: 'walking' as const, at: k - TRAIL_STEPS }),
+      ...(k % 3 === 0 ? { mishap: { kind: 'error' as const, ticks: 5 } } : {}),
+    })),
+    { ...ant({ id: 'w', label: 'worker', breed: 'opus', task: 'working', at: 2 }), mishap: { kind: 'error' as const, ticks: 5 } },
+    { ...ant({ id: 'b', label: 'builder', breed: 'sonnet', task: 'building', at: 3 }), mishap: { kind: 'denied' as const, ticks: 5 } },
+  ]
+  for (const width of [25, 40, 60]) {
+    for (let tick = 0; tick < 4; tick++) {
+      const lines = compose(rows, crowd, [], { width, height: 30, tick })
+      for (const l of lines) expect(Array.from(lineText(l)).length <= width).toBe(true)
+    }
+  }
 })

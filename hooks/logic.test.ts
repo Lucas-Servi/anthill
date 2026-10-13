@@ -1,4 +1,5 @@
 import { test, expect } from 'claude-code/testing'
+import type { AgentInfo } from 'claude-code'
 import type { Ant, Row } from '../types'
 import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, branchPrefixSteps, isBuilt, relativize, BUILD_STEPS } from './tree'
 import {
@@ -21,6 +22,9 @@ import {
   dig,
   seatOrbits,
   inHole,
+  reconcile,
+  STALE_TICKS,
+  MISHAP_TICKS,
 } from './ants'
 import { SUMMIT, TRAIL, TUNNEL, TUNNEL_SEATS, GROWTH, H_GROWTH, GROWTH_STAGES, stageFor } from './mound'
 
@@ -853,4 +857,181 @@ test('a returning ant crossing from a deep row to a shallow one shows no climb (
   ;[ant] = tick(ant, rows)
   expect(ant.at).toBe(0)
   expect(ant.climbDepth).toBeUndefined()
+})
+
+// ---- reconcile: ants of ended/unlisted subagents leave ------------------------
+
+const infoFor = (id: string, status: AgentInfo['status']): AgentInfo => ({ id, description: 'x', type: 'general-purpose', status })
+
+test('reconcile retires a busy ant whose agent is listed ended, heading it straight home', () => {
+  for (const status of ['completed', 'failed', 'killed'] as const) {
+    const busy = { ...markBusy(newAnt('sub', 'agent', 'other', '#fff')), busySeat: 1 }
+    const [next] = reconcile([busy], [infoFor('sub', status)], 10, 'main')
+    expect(next!.task).toBe('home')
+    expect(next!.leaving).toBe(true)
+    expect(next!.busySeat).toBeUndefined()
+  }
+})
+
+test('reconcile retires an already-walking ant whose agent ended, letting it keep walking home first', () => {
+  const walking: Ant = { ...newAnt('sub', 'agent', 'other', '#fff'), task: 'walking', at: 3, job: { id: 'j', path: 'a.ts', kind: 'work' } }
+  const [next] = reconcile([walking], [infoFor('sub', 'failed')], 10, 'main')
+  expect(next!.task).toBe('walking') // keeps walking home, not teleported there
+  expect(next!.at).toBe(3)
+  expect(next!.leaving).toBe(true)
+})
+
+test('reconcile leaves an already-leaving ant alone, even if its agent is listed ended', () => {
+  const already = retire(markBusy(newAnt('sub', 'agent', 'other', '#fff')))
+  const ants = [already]
+  expect(reconcile(ants, [infoFor('sub', 'killed')], 10, 'main')).toBe(ants)
+})
+
+test('reconcile only clears a busy ant\'s dig, not retiring it, when its agent is listed idle', () => {
+  const busy = { ...markBusy(newAnt('sub', 'agent', 'other', '#fff')), busySeat: 2 }
+  const [next] = reconcile([busy], [infoFor('sub', 'idle')], 10, 'main')
+  expect(next!.task).toBe('home')
+  expect(next!.busySeat).toBeUndefined()
+  expect(next!.leaving).toBeUndefined()
+})
+
+test('reconcile leaves a non-busy ant with an idle agent untouched, same array reference', () => {
+  const home = newAnt('sub', 'agent', 'other', '#fff')
+  const ants = [home]
+  expect(reconcile(ants, [infoFor('sub', 'idle')], 10, 'main')).toBe(ants)
+})
+
+test('reconcile does nothing for an ant listed running, pending or waiting', () => {
+  for (const status of ['running', 'pending', 'waiting'] as const) {
+    const busy = markBusy(newAnt('sub', 'agent', 'other', '#fff'))
+    const ants = [busy]
+    expect(reconcile(ants, [infoFor('sub', status)], 10, 'main')).toBe(ants)
+  }
+})
+
+test('reconcile retires a busy ant missing from the list once it has gone quiet for over STALE_TICKS', () => {
+  const stale = { ...markBusy(newAnt('sub', 'agent', 'other', '#fff')), seenAt: 0 }
+  const [next] = reconcile([stale], [], STALE_TICKS + 1, 'main')
+  expect(next!.task).toBe('home')
+  expect(next!.leaving).toBe(true)
+})
+
+test('reconcile leaves a busy ant missing from the list alone before STALE_TICKS has passed, exactly at the threshold included', () => {
+  const notYet = { ...markBusy(newAnt('sub', 'agent', 'other', '#fff')), seenAt: 0 }
+  const ants = [notYet]
+  expect(reconcile(ants, [], STALE_TICKS, 'main')).toBe(ants) // not yet over: `>`, not `>=`
+})
+
+test('reconcile treats a busy ant with no seenAt as silent since tick 0', () => {
+  const stale = markBusy(newAnt('sub', 'agent', 'other', '#fff')) // no seenAt field at all
+  const [next] = reconcile([stale], [], STALE_TICKS + 1, 'main')
+  expect(next!.leaving).toBe(true)
+})
+
+test('reconcile leaves a non-busy ant missing from the list alone no matter how stale', () => {
+  const home = { ...newAnt('sub', 'agent', 'other', '#fff'), seenAt: 0 }
+  const ants = [home]
+  expect(reconcile(ants, [], STALE_TICKS * 10, 'main')).toBe(ants)
+})
+
+test('reconcile never touches the main ant, listed ended, listed idle, or simply unlisted and stale', () => {
+  const main = { ...markBusy(newAnt('main', 'main', 'other', '#fff')), seenAt: 0 }
+  const ants = [main]
+  expect(reconcile(ants, [infoFor('main', 'killed')], STALE_TICKS * 10, 'main')).toBe(ants)
+  expect(reconcile(ants, [infoFor('main', 'idle')], STALE_TICKS * 10, 'main')).toBe(ants)
+  expect(reconcile(ants, [], STALE_TICKS * 10, 'main')).toBe(ants)
+})
+
+test('reconcile returns the very same array when nothing at all changed, mixed ants included', () => {
+  const main = markBusy(newAnt('main', 'main', 'other', '#fff'))
+  const running = markBusy(newAnt('a', 'agent', 'other', '#fff'))
+  const quiet = { ...markBusy(newAnt('b', 'agent', 'other', '#fff')), seenAt: 5 }
+  const ants = [main, running, quiet]
+  const infos = [infoFor('main', 'killed'), infoFor('a', 'running')]
+  expect(reconcile(ants, infos, 5 + STALE_TICKS, 'main')).toBe(ants)
+})
+
+test('step decrements an ant\'s mishap by one tick, dropping it once it reaches 0, whatever its task', () => {
+  let ant: Ant = { ...newAnt('a', 'agent', 'other', '#fff'), mishap: { kind: 'error', ticks: 2 } }
+  const rows: Row[] = []
+  ;[ant] = tick(ant, rows)
+  expect(ant.mishap).toEqual({ kind: 'error', ticks: 1 })
+  ;[ant] = tick(ant, rows)
+  expect(ant.mishap).toBeUndefined()
+})
+
+test('step decrements a row\'s flash by one tick, dropping it once it reaches 0, the same way', () => {
+  let rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'denied', ticks: 2 } }]
+  ;({ rows } = step([], rows))
+  expect(rows[0]!.flash).toEqual({ kind: 'denied', ticks: 1 })
+  ;({ rows } = step([], rows))
+  expect(rows[0]!.flash).toBeUndefined()
+})
+
+test('a mishap (and a flash) fades to removal after exactly MISHAP_TICKS ticks, not sooner', () => {
+  let ant: Ant = { ...newAnt('a', 'agent', 'other', '#fff'), mishap: { kind: 'denied', ticks: MISHAP_TICKS } }
+  let rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'denied', ticks: MISHAP_TICKS } }]
+  for (let i = 0; i < MISHAP_TICKS - 1; i++) {
+    ;[ant, rows] = tick(ant, rows)
+    expect(ant.mishap).toBeDefined()
+    expect(rows[0]!.flash).toBeDefined()
+  }
+  ;[ant, rows] = tick(ant, rows)
+  expect(ant.mishap).toBeUndefined()
+  expect(rows[0]!.flash).toBeUndefined()
+})
+
+test('step keeps every other field untouched while an ant\'s mishap, or a row\'s flash, fades', () => {
+  const ant: Ant = { ...newAnt('a', 'agent', 'opus', '#5f87ff'), mishap: { kind: 'denied', ticks: MISHAP_TICKS } }
+  const rows: Row[] = [{ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false, flash: { kind: 'denied', ticks: MISHAP_TICKS } }]
+  const result = step([ant], rows)
+  expect(result.ants[0]).toMatchObject({ id: 'a', label: 'agent', breed: 'opus', color: '#5f87ff', task: 'home', at: HOME, queue: [], doneIds: [] })
+  expect(result.ants[0]!.mishap).toEqual({ kind: 'denied', ticks: MISHAP_TICKS - 1 })
+  expect(result.rows[0]).toMatchObject({ path: 'a.ts', name: 'a.ts', depth: 0, isDir: false })
+  expect(result.rows[0]!.flash).toEqual({ kind: 'denied', ticks: MISHAP_TICKS - 1 })
+})
+
+test('a retiring ant with a fresh mishap lingers home, blinking, for the full MISHAP_TICKS fade instead of vanishing on the very next tick (regression)', () => {
+  // mirrors register.tsx's turn.complete handler (and reconcile()'s ended/STALE_TICKS
+  // branches): a subagent's call just errored, giving its still-busy ant a mishap, and
+  // its turn (or agent) ends right after — retire(clearBusy(ant)) on that very same ant.
+  const ant: Ant = retire(clearBusy({ ...markBusy(newAnt('sub', 'agent', 'other', '#fff')), mishap: { kind: 'error', ticks: MISHAP_TICKS } }))
+  expect(ant).toMatchObject({ task: 'home', leaving: true })
+  expect(ant.mishap).toBeDefined()
+
+  let ants: Ant[] = [ant]
+  for (let i = 0; i < MISHAP_TICKS - 1; i++) {
+    ;({ ants } = step(ants, []))
+    expect(ants.length).toBe(1) // still there, home and blinking — not deleted the tick right after retiring
+    expect(ants[0]!.mishap).toBeDefined()
+  }
+  ;({ ants } = step(ants, []))
+  expect(ants.length).toBe(0) // removed only once the mishap has actually faded away
+})
+
+test('a retiring ant with no mishap is removed on the very first tick, same as before this feature', () => {
+  const ant = retire(clearBusy(markBusy(newAnt('sub', 'agent', 'other', '#fff'))))
+  const result = step([ant], [])
+  expect(result.ants).toEqual([])
+})
+
+test('a flash set on a brand-new file\'s row (still mid build, built:0) holds its ticks until the row is actually built, then spends its full budget from there (regression)', () => {
+  // mirrors register.tsx's tool.call hook: a denied/errored Write to a brand-new file
+  // sets both `built: 0` and the row's `flash` at the same moment, often well before the
+  // ant has even reached the row.
+  let rows: Row[] = [{ path: 'new.ts', name: 'new.ts', depth: 0, isDir: false, built: 0 }]
+  let ant: Ant = finish(assign(newAnt('a', 'agent', 'other', '#fff'), { id: 'w1', path: 'new.ts', kind: 'build' }), 'w1')
+  rows = rows.map((r) => (r.path === 'new.ts' ? { ...r, flash: { kind: 'denied' as const, ticks: MISHAP_TICKS } } : r))
+
+  let ants: Ant[] = [ant]
+  while (!isBuilt(rows[0]!)) {
+    ;({ ants, rows } = step(ants, rows))
+    expect(rows[0]!.flash?.ticks).toBe(MISHAP_TICKS) // hidden behind the build animation: held, not spent
+  }
+  for (let i = 0; i < MISHAP_TICKS - 1; i++) {
+    ;({ ants, rows } = step(ants, rows))
+    expect(rows[0]!.flash).toBeDefined()
+  }
+  ;({ ants, rows } = step(ants, rows))
+  expect(rows[0]!.flash).toBeUndefined()
 })
