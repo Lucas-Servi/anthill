@@ -1,6 +1,6 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
-import { STALE_TICKS } from './ants'
+import { MISHAP_TICKS, STALE_TICKS } from './ants'
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -325,8 +325,10 @@ test('a Read the permission prompt denies flashes that file\'s row and gives the
   await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
   expect(latest.ants.find(a => a.id === 'main')?.mishap).toMatchObject({ kind: 'denied' })
   expect(latest.rows.find(r => r.path === 'src/main.ts')?.flash).toMatchObject({ kind: 'denied' })
+  // it dropped the job at once and turned back, rather than walking on to the file
+  expect(['returning', 'home']).toContain(latest.ants.find(a => a.id === 'main')?.task)
 
-  await clock.advance(120 * 15) // past MISHAP_TICKS: both fade away on their own
+  await clock.advance(120 * (MISHAP_TICKS + 3)) // past MISHAP_TICKS: both fade away on their own
   expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
   expect(latest.rows.find(r => r.path === 'src/main.ts')?.flash).toBeUndefined()
 
@@ -348,7 +350,7 @@ test('a Bash call whose tool errored gives the ant an \'error\' mishap, with no 
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
   expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeDefined()
 
-  await clock.advance(120 * 15)
+  await clock.advance(120 * (MISHAP_TICKS + 3))
   expect(latest.ants.find(a => a.id === 'main')?.mishap).toBeUndefined()
   expect(await idles()).toBe(true)
 })
@@ -386,7 +388,7 @@ test('a subagent\'s fresh mishap survives its turn ending right after (retire), 
   await clock.advance(120) // one more tick: still there, the mishap only just fading
   expect(latest.ants.find(a => a.id === 'sub1')).toBeDefined()
 
-  await clock.advance(120 * 15) // well past MISHAP_TICKS: now it's gone for good
+  await clock.advance(120 * (MISHAP_TICKS + 3)) // well past MISHAP_TICKS: now it's gone for good
   expect(latest.ants.find(a => a.id === 'sub1')).toBeUndefined()
   expect(await idles()).toBe(true)
 })

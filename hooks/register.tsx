@@ -10,6 +10,7 @@ import {
   clearBusy,
   colorFor,
   dig,
+  drop,
   finish,
   markBusy,
   newAnt,
@@ -339,15 +340,15 @@ export const register: Register = on => {
     } finally {
       const cur = ants.find(a => a.id === id)
       if (job) {
-        // mishap and all, the job is finished exactly as on a clean call: the ant
-        // drops it and heads home, same as it always has. The ant itself only takes
-        // the mishap when this call's job is the one it's actually, visibly on right
-        // now — a second, queued call (two parallel Reads, say) failing while the
-        // first is still in flight would otherwise paint the mishap onto an ant that's
-        // plainly walking/working an unrelated, unaffected job; the row's own flash
-        // below is signal enough for a job that was never shown on the ant at all.
+        // The ant only takes the mishap when this call's job is the one it's actually,
+        // visibly on right now: then it stumbles and drops the job at once, turning
+        // back wherever it is, rather than walking on to a file the call never worked
+        // on. A second, queued call (two parallel Reads, say) failing while the first
+        // is still in flight would otherwise paint the mishap onto an ant plainly busy
+        // with an unrelated, unaffected job: that job is just finished as on a clean
+        // call, and the row's own flash below is signal enough for it.
         const onAnt = mishap !== undefined && cur?.job?.id === job.id
-        if (cur) setAnt(touch(finish(onAnt ? { ...cur, mishap } : cur, job.id)))
+        if (cur) setAnt(touch(onAnt ? drop({ ...cur, mishap }, job.id) : finish(cur, job.id)))
         if (mishap) {
           const at = indexOf(rows, job.path)
           if (at !== -1) rows = rows.map((r, i) => (i === at ? { ...r, flash: mishap! } : r))

@@ -10,10 +10,10 @@ const WORK_BURST = 6
 
 /**
  * How many ticks an ant's mishap, or a row's flash, shows before step() fades it away:
- * about 1.5s at TICK_MS (120ms) a tick — long enough to read as a stumble, not so long
- * it lingers after the ant has moved on.
+ * about 5s at TICK_MS (120ms) a tick. Seen live, 1.5s was over before anyone glancing at
+ * the pane could catch it; this is long enough to notice, short enough not to linger.
  */
-export const MISHAP_TICKS = 12
+export const MISHAP_TICKS = 40
 
 /**
  * A walking ant leaves the hole only when no other ant is on the first GATE
@@ -220,6 +220,17 @@ export function finish(ant: Ant, jobId: string): Ant {
   if (ant.task === 'working') return advanceToNext(ant)
   // building or still walking: can't leave yet, just remember it's done
   return markDone(ant, jobId)
+}
+
+/**
+ * Drops job `jobId` because its tool call failed or was denied: unlike finish(), the ant
+ * doesn't carry on to a file that the call never worked on (or work there a while) but
+ * turns back at once, wherever it is, onto its next queued job or home. A job that isn't
+ * its current one is simply finished, as finish() always does.
+ */
+export function drop(ant: Ant, jobId: string): Ant {
+  if (ant.job?.id !== jobId) return finish(ant, jobId)
+  return advanceToNext(clearClimb(ant))
 }
 
 export function retire(ant: Ant): Ant {

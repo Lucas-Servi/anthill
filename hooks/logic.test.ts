@@ -7,6 +7,7 @@ import {
   newAnt,
   assign,
   finish,
+  drop,
   retire,
   step,
   shiftForInsert,
@@ -1034,4 +1035,17 @@ test('a flash set on a brand-new file\'s row (still mid build, built:0) holds it
   }
   ;({ ants, rows } = step(ants, rows))
   expect(rows[0]!.flash).toBeUndefined()
+})
+
+test('drop turns an ant back at once from the job whose call failed, wherever it is; another job is just finished', () => {
+  const job = { id: 'j', path: 'a.ts', kind: 'work' as const }
+  const next = { id: 'k', path: 'b.ts', kind: 'work' as const }
+  for (const task of ['walking', 'working', 'building'] as const) {
+    const ant: Ant = { ...newAnt('a', 'main', 'other', '#fff'), at: 0, task, job }
+    expect(drop(ant, 'j')).toMatchObject({ task: 'returning', job: undefined })
+    expect(drop({ ...ant, queue: [next] }, 'j')).toMatchObject({ task: 'walking', job: next, queue: [] })
+  }
+  // a queued job that failed is dropped from the queue, the current one carries on
+  const busy: Ant = { ...newAnt('a', 'main', 'other', '#fff'), at: 0, task: 'walking', job, queue: [next] }
+  expect(drop(busy, 'k')).toMatchObject({ task: 'walking', job, queue: [] })
 })
