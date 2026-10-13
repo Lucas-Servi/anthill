@@ -1,7 +1,10 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
 import { MISHAP_TICKS, STALE_TICKS } from './ants'
-import { SETTLE_TICKS } from './render'
+import { SETTLE_TICKS, compactMs } from './render'
+
+/** A number rounded to 6 places, for comparing computed fractions. */
+const approx = (n: unknown): number => Math.round((n as number) * 1e6) / 1e6
 
 const CWD = '/proj'
 const DIRS: Record<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: boolean }[]> = {
@@ -104,6 +107,8 @@ const session = async (
   }[] = [],
   /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job, or to deny/error it. */
   toolCall: () => unknown = () => ({ result: 'ok' }),
+  /** What $.store holds: read by store.get, written by store.set. */
+  store: Record<string, unknown> = {},
 ) => {
   const clock = mock.clock(on)
   const latest = {
@@ -144,8 +149,12 @@ const session = async (
   on('fs.exists', ($, e) => ({ value: !missing.includes(e.path) }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: undefined }) as never)
-  on('store.get', () => ({ value: undefined }) as never)
-  on('store.set', () => ({ value: undefined }) as never)
+  on('store.get', ($, e) => ({ value: store[(e as { key: string }).key] }) as never)
+  on('store.set', ($, e) => {
+    const set = e as { key: string; value: unknown }
+    store[set.key] = set.value
+    return { value: undefined } as never
+  })
   on('tool.call', () => toolCall() as never)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
   const pane = await $.ui.mount({ plugin: 'anthill', surface: 'terminal', component: 'Pane', requestId: 'anthill', props: PANE_PROPS as never })
@@ -464,8 +473,9 @@ test('mainRow keeps the main ant\'s row visible over a farther, still-walking su
   // tree at once, far apart, instead of chasing their exact race-y hole-gate timing.
   const { clock, latest, pane } = await session($, on, dirs as never, [], [], () => new Promise(() => {}))
 
-  void $.tool.call({ tool: 'Read', file_path: `${CWD}/f02.ts`, tool_use_id: 'r1' } as never)
-  void $.tool.call({ tool: 'Read', file_path: `${CWD}/f55.ts`, tool_use_id: 'r2', agentId: 'sub1' } as never)
+  // (never settled: once the test is over the kit abandons them, rejecting; nothing to see in that)
+  $.tool.call({ tool: 'Read', file_path: `${CWD}/f02.ts`, tool_use_id: 'r1' } as never).catch(() => {})
+  $.tool.call({ tool: 'Read', file_path: `${CWD}/f55.ts`, tool_use_id: 'r2', agentId: 'sub1' } as never).catch(() => {})
   await clock.advance(120 * 90) // generous: both well past arrival, both parked indefinitely
 
   const main = latest.ants.find(a => a.id === 'main')!
@@ -796,4 +806,63 @@ test('a subagent\'s own compaction is not main\'s: it neither folds the tree nor
   await $.session.compact({ trigger: 'manual', agentId: 'sub1', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
   expect(latest.folds).toEqual([expect.objectContaining({ id: 'sub1', after: 1 })])
   expect(latest.folds[0]!.isMain).toBeUndefined()
+})
+
+/** A live context of `tokens` out of a 200k window, as $.session.usage() reports it. */
+const usage = (tokens: number) => ({ value: { context: { tokens, window: 200_000, percent: tokens / 2000 } } }) as never
+
+test('main\'s compaction is paced to the context it folds, from the mound it began at', async ($, on) => {
+  on('session.usage', () => usage(100_000))
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  const { latest } = await session($, on, DIRS, [])
+  const grown = latest.growth
+  expect(grown).toBeGreaterThan(0)
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  expect(latest.folds).toEqual([expect.objectContaining({ id: 'main', isMain: true, eta: Math.round(compactMs(100_000) / 120), grown })])
+})
+
+test('a per-token cost learned in an earlier session paces the next compaction', async ($, on) => {
+  on('session.usage', () => usage(100_000))
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  const { latest } = await session($, on, DIRS, [], [], undefined, { compactMsPerToken: 1 })
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  expect(latest.folds[0]).toMatchObject({ eta: Math.round(compactMs(100_000, 1) / 120) })
+})
+
+test('a compaction the summarizer really ran is timed, and how long it took per token is kept for the next', async ($, on) => {
+  let finish: (() => void) | undefined
+  const gate = new Promise<void>(resolve => (finish = resolve))
+  on('session.usage', () => usage(100_000))
+  on('session.compact', async ($, e) => {
+    await gate
+    return { messages: e.messages.slice(1), usage: { input_tokens: 100_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } as never
+  })
+  const store: Record<string, unknown> = {}
+  const { clock } = await session($, on, DIRS, [], [], undefined, store)
+  const done = $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  await clock.advance(30_000)
+  finish!()
+  await done
+  await clock.advance(0)
+  expect(approx(store.compactMsPerToken)).toBe(approx((30_000 - 5_000) / 100_000))
+})
+
+test('a compaction answered without the summarizer (no usage) teaches nothing', async ($, on) => {
+  on('session.usage', () => usage(100_000))
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  const store: Record<string, unknown> = {}
+  await session($, on, DIRS, [], [], undefined, store)
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  expect(store.compactMsPerToken).toBeUndefined()
+})
+
+test('a precompute folds nothing yet, so it shows no fold and leaves the mound be', async ($, on) => {
+  on('session.usage', () => usage(100_000))
+  on('session.compact', ($, e) => ({ messages: e.messages.slice(1) }) as never)
+  const { latest } = await session($, on, DIRS, [])
+  const grown = latest.growth
+  await $.session.compact({ trigger: 'precompute', messages: [{ role: 'user', text: 'x', toolUses: [] }, { role: 'user', text: 'y', toolUses: [] }] } as never)
+  expect(latest.folds).toEqual([])
+  expect(latest.growth).toBe(grown)
+  expect(latest.ants.find(a => a.id === 'main')?.task).toBe('home')
 })

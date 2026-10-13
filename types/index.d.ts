@@ -120,8 +120,15 @@ export type Fold = {
   settle?: number
   /** Set on main's own compaction: the one that folds the tree and shrinks the mound. */
   isMain?: true
-  /** `frame` when it resolved: how far the tree had folded, so it unfolds from there. */
+  /** `frame` when it resolved: how far the refactoring had got, so it finishes from there. */
   peak?: number
+  /**
+   * Main's only: how many ticks it's expected to run, from how much context it's folding
+   * (render.ts compactMs), so the refactoring is paced to last about as long as it does.
+   */
+  eta?: number
+  /** Main's only: the mound's growth stage when it began, the hump the workers haul away. */
+  grown?: number
 }
 
 /**

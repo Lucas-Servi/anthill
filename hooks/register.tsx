@@ -23,7 +23,7 @@ import {
   step,
 } from './ants'
 import { GROWTH_STAGES, SHAPES, stageFor, stageOf } from './mound'
-import { SETTLE_TICKS, compose, legendLines, type Line } from './render'
+import { SETTLE_TICKS, compactMs, compose, learnRate, legendLines, type Line } from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -61,6 +61,12 @@ let growth = 0
 let dug: Dug[] = []
 /** Context tokens at which the mound reaches its last stage; read once at session.start. */
 let growthThreshold = Infinity
+/**
+ * How many ms main's compactions have been taking per token of context (render.ts
+ * learnRate), kept in $.store so the next session's are paced right from the first.
+ */
+let compactRate: number | undefined
+const COMPACT_RATE_KEY = 'compactMsPerToken'
 
 const publish = async ($: EngineInterface) => {
   ants = seatOrbits(seatPeeks(ants))
@@ -186,6 +192,33 @@ const jobOf = async ($: EngineInterface, e: Record<string, unknown>) => {
   return job
 }
 
+/**
+ * How much context main's compaction is folding, in tokens: the live figure, else a rough
+ * count of the transcript itself (about 4 characters a token).
+ */
+const contextTokens = async ($: EngineInterface, messages: readonly unknown[]): Promise<number> => {
+  try {
+    const tokens = (await $.session.usage()).context.tokens
+    if (tokens !== undefined && tokens > 0) return tokens
+  } catch {
+    // fall back on the transcript
+  }
+  try {
+    return Math.round(JSON.stringify(messages).length / 4)
+  } catch {
+    return 0
+  }
+}
+
+/** `$.clock.now()`, or undefined if the clock can't be read: the compaction just goes untimed. */
+const now = async ($: EngineInterface): Promise<number | undefined> => {
+  try {
+    return await $.clock.now()
+  } catch {
+    return undefined
+  }
+}
+
 /** Resets the mound to its unbuilt shape: a resolved compaction, or a /clear. */
 const resetGrowth = () => {
   growth = 0
@@ -220,6 +253,8 @@ export const register: Register = on => {
     // save, or a session that hasn't gone through $.store yet), then 'side'.
     const stored = await $.store.get('layout')
     layout = stored === 'strip' || stored === 'side' ? stored : (await read($, layoutAtom)) ?? 'side'
+    const rate = await $.store.get(COMPACT_RATE_KEY)
+    compactRate = typeof rate === 'number' && rate > 0 ? rate : undefined
     spawned = Math.max(0, ants.length - 1)
     // Files a failed call put on the tree in an older version (or deleted since) leave
     // their rows behind: drop any saved file row whose file isn't on disk any more.
@@ -400,21 +435,37 @@ export const register: Register = on => {
   })
 
   on('session.compact', async ($, e, next) => {
+    // A precompute only works a summary out ahead of time, folding nothing yet: the
+    // compaction that later uses it is the one shown.
+    if (e.trigger === 'precompute') return next(e)
     const id = e.agentId ?? MAIN
     const ant = antFor(id, id === MAIN ? 'main' : 'agent')
     setAnt(markBusy(ant))
-    // main's own compaction folds the tree and shrinks the mound; a subagent's only shows its header
-    folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0, ...(e.agentId ? {} : { isMain: true as const }) }]
+    // main's own compaction folds the tree and refactors the mound, paced to last about as
+    // long as folding this much context should take; a subagent's only shows its header
+    const tokens = e.agentId ? 0 : await contextTokens($, e.messages)
+    const startedAt = e.agentId ? undefined : await now($)
+    const paced = { isMain: true as const, eta: Math.max(1, Math.round(compactMs(tokens, compactRate) / TICK_MS)), grown: growth }
+    folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0, ...(e.agentId ? {} : paced) }]
     await publish($)
     try {
       const result = await next(e)
       const before = folds.find(f => f.id === id)?.before ?? e.messages.length
       const after = result.skip !== undefined ? before : result.messages.length
       folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS, peak: f.frame } : f))
-      // A resolved compaction of main's own conversation (not a dry precompute, and not
-      // skipped) shrinks it back down: the mound and its dug tunnels go back to their own
-      // starting shape too. A subagent's own compaction never touches the mound at all.
-      if (!e.agentId && e.trigger !== 'precompute' && result.skip === undefined) resetGrowth()
+      // A resolved compaction of main's own conversation (not skipped) shrinks it back down:
+      // the mound and its dug tunnels go back to their own starting shape too. A subagent's
+      // own compaction never touches the mound at all.
+      if (!e.agentId && result.skip === undefined) {
+        resetGrowth()
+        // Learn how long that took, only when the summarizer really ran (`usage`): not a
+        // summary reused from a precompute, nor a hook's answer in core's place.
+        const endedAt = result.usage && startedAt !== undefined ? await now($) : undefined
+        if (endedAt !== undefined) {
+          compactRate = learnRate(compactRate, result.tokensBefore ?? tokens, endedAt - startedAt!)
+          if (compactRate !== undefined) void $.store.set(COMPACT_RATE_KEY, compactRate)
+        }
+      }
       await publish($)
       return result
     } finally {

@@ -302,8 +302,8 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
   }
 
   // The ants refactoring the anthill (main compacting): its loose light-shade cells and
-  // the tunnels dug through it filled in and packed tight, from the bottom up,
-  // `refactor.packed` of them so far (drawn over the tunnels: they're being filled).
+  // the tunnels dug through it filled in and packed tight, from the bottom up, the
+  // `refactor.packed` fraction of them so far (drawn over the tunnels: they're being filled).
   if (refactor && refactor.packed > 0) {
     const mask = stageOf(shape, stage).mask
     const seen = new Set<string>()
@@ -318,7 +318,7 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
     mask.forEach((keys, line) => Array.from(keys).forEach((k, col) => k === 'l' && add({ line, col })))
     for (const d of dug) if (route[d.i]) add(route[d.i]!)
     loose.sort((a, b) => b.line - a.line || a.col - b.col)
-    for (const p of loose.slice(0, refactor.packed)) {
+    for (const p of loose.slice(0, Math.floor(refactor.packed * loose.length))) {
       const row = cells[p.line]
       if (row) row[p.col] = { ch: PACKED_CHAR, color: MOUND_PALETTE.o }
     }
@@ -435,10 +435,11 @@ const WORKERS = 3
 const WORKER_TICKS = 2
 
 /**
- * The ants refactoring the anthill while main's conversation is compacted: how many of its
- * loose cells are packed tight so far, and the workers hauling (only while it runs).
+ * The ants refactoring the anthill while main's conversation is compacted: the growth stage
+ * the mound is drawn at (the hump coming down), what fraction (0..1) of its loose cells are
+ * packed tight and of the tree's fold steps are taken, and the workers hauling (while at it).
  */
-type Refactor = { packed: number; workers?: { frame: number; color: string } }
+type Refactor = { stage: number; packed: number; folded: number; workers?: { frame: number; color: string } }
 
 /** Columns `start` (inclusive) to `end` (exclusive) of one mound line, held by an ant. */
 type Span = { start: number; end: number }
@@ -490,37 +491,91 @@ const overlayLine = (base: string, overlays: { col: number; glyph: string; color
   return line
 }
 
-/** How many ticks each fold step takes: one depth level of the tree, or one top-level row. */
-const FOLD_STAGE_TICKS = 2
-
 /** Top-level rows a fully folded tree still shows. */
 const FOLDED_KEEP = 3
 
-/** How many ticks the mound takes to shrink back one growth stage while main compacts. */
-const MOUND_FOLD_TICKS = 2
+// ---- how long main's compaction is expected to take, and the refactoring paced to it ----
+
+/** A compaction's fixed overhead, and what each token of context it folds adds, in ms. */
+export const COMPACT_BASE_MS = 5000
+export const COMPACT_MS_PER_TOKEN = 0.4
+/** The per-token cost learnRate() will ever settle on, whatever one odd compaction measured. */
+const MIN_MS_PER_TOKEN = 0.02
+const MAX_MS_PER_TOKEN = 5
+
+/** How long folding `tokens` of context should take, in ms, at `msPerToken` (learned, or the default). */
+export const compactMs = (tokens: number, msPerToken = COMPACT_MS_PER_TOKEN): number =>
+  COMPACT_BASE_MS + Math.max(0, tokens || 0) * msPerToken
 
 /**
- * How many ticks a resolved compaction's "memory folded" header stays, the tree unfolding
- * again under it: about 5s at 120ms a tick. Its first SETTLE_HOLD ticks it stays folded,
- * so the header reads against the folded tree, then the tree unfolds evenly over the rest.
+ * The per-token cost after one more compaction that folded `tokens` of context in `ms`:
+ * halfway from the last estimate (`rate`, absent before the first) to what this one took,
+ * so a single odd compaction can't throw the next one's pacing far off.
+ */
+export const learnRate = (rate: number | undefined, tokens: number, ms: number): number | undefined => {
+  if (!(tokens > 0) || !(ms > 0)) return rate
+  const seen = Math.min(MAX_MS_PER_TOKEN, Math.max(MIN_MS_PER_TOKEN, Math.max(0, ms - COMPACT_BASE_MS) / tokens))
+  return rate === undefined || !(rate > 0) ? seen : (rate + seen) / 2
+}
+
+/** `Fold.eta` for a fold that has none (saved before it existed): about 30s at 120ms a tick. */
+const DEFAULT_ETA_TICKS = 250
+
+/** How far through its expected run (`frame / eta`) the refactoring keeps a steady pace. */
+const STEADY_UNTIL = 0.75
+/** After that it slows, so an overdue compaction still shows progress: its time scale, in etas. */
+const OVERDUE_EASE = 0.6
+
+/**
+ * How far main's compaction has refactored the anthill after `frame` ticks of an expected
+ * `eta`, 0..1: steadily up to STEADY_UNTIL of the way through its eta, then ever slower,
+ * never quite done until it resolves — however long past its estimate that takes.
+ */
+export const foldProgress = (frame: number, eta = DEFAULT_ETA_TICKS): number => {
+  const x = Math.max(0, frame) / Math.max(1, eta)
+  if (x <= STEADY_UNTIL) return x
+  return STEADY_UNTIL + (1 - STEADY_UNTIL) * (1 - Math.exp(-(x - STEADY_UNTIL) / OVERDUE_EASE))
+}
+
+/** The part of the refactoring spent hauling the hump away (if there is one); packing gets the rest. */
+const HAUL_SHARE = 0.5
+/** How far through the refactoring the tree is fully folded. */
+const TREE_SHARE = 0.9
+
+/**
+ * How many ticks a resolved compaction's "memory folded" header stays: about 5s at 120ms
+ * a tick. Over its first SETTLE_FINISH ticks the ants finish whatever refactoring was left
+ * (a compaction quicker than its estimate), it holds fully folded until SETTLE_HOLD, so the
+ * header reads against the folded tree, then the tree unfolds evenly over the rest.
  */
 export const SETTLE_TICKS = 40
-const SETTLE_HOLD = 10
+const SETTLE_FINISH = 6
+const SETTLE_HOLD = 14
 
 /**
- * How main's compaction refactors the anthill at this moment: while it runs, the workers
- * haul the hump away (it shrinks a stage every MOUND_FOLD_TICKS) and, once it's gone, pack
- * the mound tighter a cell a tick; once resolved they're done, and the packing holds for
- * SETTLE_HOLD ticks, then eases back as the tree unfolds. A skipped one packs nothing.
+ * How main's compaction refactors the anthill at this moment. `live` is the growth stage
+ * the mound would be drawn at without it. Progress `p` (foldProgress) spends HAUL_SHARE
+ * hauling the hump away, a stage at a time, then packs the mound tighter, cell by cell,
+ * while the tree folds over TREE_SHARE of it. Once resolved the ants finish the job, it
+ * holds, then the packing and the tree ease back together. A skipped one changes nothing.
  */
-const refactorOf = (f: Fold, grown: number, color: string): Refactor => {
-  const haulTicks = grown * MOUND_FOLD_TICKS
-  if (f.after === undefined) return { packed: Math.max(0, f.frame - haulTicks), workers: { frame: f.frame, color } }
-  if (f.after === f.before) return { packed: 0 }
-  const reached = Math.max(0, (f.peak ?? 0) - haulTicks)
+const refactorOf = (f: Fold, live: number, color: string): Refactor => {
+  const from = f.grown ?? live
+  const haul = from > 0 ? HAUL_SHARE : 0
+  const at = (p: number) => ({
+    stage: haul > 0 ? Math.round(from * (1 - Math.min(1, p / haul))) : from,
+    packed: Math.min(1, Math.max(0, (p - haul) / (1 - haul))),
+    folded: Math.min(1, p / TREE_SHARE),
+  })
+  if (f.after === undefined) return { ...at(foldProgress(f.frame, f.eta)), workers: { frame: f.frame, color } }
+  if (f.after === f.before) return { stage: live, packed: 0, folded: 0 }
   const elapsed = SETTLE_TICKS - (f.settle ?? 0)
-  if (elapsed < SETTLE_HOLD) return { packed: reached }
-  return { packed: Math.round(reached * Math.max(0, 1 - (elapsed - SETTLE_HOLD) / (SETTLE_TICKS - SETTLE_HOLD))) }
+  if (elapsed < SETTLE_FINISH) {
+    const reached = foldProgress(f.peak ?? f.frame, f.eta)
+    return { ...at(reached + ((1 - reached) * (elapsed + 1)) / SETTLE_FINISH), workers: { frame: f.frame + elapsed, color } }
+  }
+  const left = elapsed < SETTLE_HOLD ? 1 : Math.max(0, 1 - (elapsed - SETTLE_HOLD) / (SETTLE_TICKS - SETTLE_HOLD))
+  return { stage: live, packed: left, folded: left }
 }
 
 /** The spinner a running compaction's header turns. */
@@ -531,20 +586,6 @@ const foldTotal = (rows: Row[]): number => {
   const maxDepth = rows.reduce((m, r) => Math.max(m, r.depth), 0)
   const top = rows.filter(r => r.depth === 0).length
   return maxDepth + Math.max(0, top - FOLDED_KEEP)
-}
-
-/**
- * How many fold steps the tree has taken at this moment of main's compaction: one more
- * every FOLD_STAGE_TICKS while it runs; once resolved, it holds where it got to for
- * SETTLE_HOLD ticks, then unfolds evenly so it's whole again as the header leaves.
- */
-const foldSteps = (f: Fold | undefined, total: number): number => {
-  if (!f) return 0
-  if (f.after === undefined) return Math.min(total, Math.floor(f.frame / FOLD_STAGE_TICKS))
-  const reached = Math.min(total, Math.floor((f.peak ?? 0) / FOLD_STAGE_TICKS))
-  const elapsed = SETTLE_TICKS - (f.settle ?? 0)
-  if (elapsed < SETTLE_HOLD) return reached
-  return Math.round(reached * Math.max(0, 1 - (elapsed - SETTLE_HOLD) / (SETTLE_TICKS - SETTLE_HOLD)))
 }
 
 /**
@@ -703,15 +744,16 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const { width, height } = opts
   const orientation = opts.orientation ?? 'vertical'
   const shape = SHAPES[orientation]
-  // While main compacts, the mound shrinks back a stage every MOUND_FOLD_TICKS (the
-  // conversation it measures is being folded away); once resolved, growth itself is 0.
+  // While main compacts, the ants refactor the mound (the conversation it measures is
+  // being folded away), paced to how long it should take; once resolved, growth itself is 0.
   const mainFold = folds.find(f => f.isMain)
-  const grown = shape.stages.indexOf(stageOf(shape, opts.growth ?? 0))
-  const stage = mainFold && mainFold.after === undefined ? Math.max(0, grown - Math.floor(mainFold.frame / MOUND_FOLD_TICKS)) : grown
+  const clamp = (n: number) => shape.stages.indexOf(stageOf(shape, n))
+  const live = clamp(opts.growth ?? 0)
 
   // -- mound block --
   const mainColor = ants.find(a => a.id === mainFold?.id)?.color ?? MOUND_PALETTE.t!
-  const refactor = mainFold ? refactorOf(mainFold, grown, mainColor) : undefined
+  const refactor = mainFold ? refactorOf({ ...mainFold, grown: clamp(mainFold.grown ?? live) }, live, mainColor) : undefined
+  const stage = refactor?.stage ?? live
   const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor)
   const indent = ' '.repeat(TREE_INDENT)
   const foldBlock: Line[] = folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))
@@ -788,7 +830,7 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const rowAnchor = opts.mainRow !== undefined && opts.mainRow >= 0 ? opts.mainRow : lowest
 
   // -- the tree folding up while main compacts (and unfolding after) --
-  const steps = foldSteps(mainFold, foldTotal(rows))
+  const steps = Math.floor((refactor?.folded ?? 0) * foldTotal(rows))
   let visible = treeLines
   let anchor = rowAnchor
   if (steps > 0) {
