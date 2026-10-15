@@ -1,6 +1,6 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
-import { MISHAP_TICKS, STALE_TICKS } from './ants'
+import { MISHAP_TICKS, NOTICE_TICKS, POKE_TICKS, STALE_TICKS } from './ants'
 import { SETTLE_TICKS, compactMs } from './render'
 
 /** A number rounded to 6 places, for comparing computed fractions. */
@@ -45,19 +45,19 @@ test('ants follow tool calls and build new files', async ($, on) => {
   })
 
   // Top level listed, ignored dirs left out, the opus ant in the legend.
-  expect(await pane.find({ text: 'README.md' })).toBeDefined()
-  expect(await pane.find({ text: 'node_modules' })).toBeUndefined()
-  expect(await pane.find({ text: /main \(opus\)/ })).toBeDefined()
+  expect(await pane.find({ text: 'README.md', in: 'mound' })).toBeDefined()
+  expect(await pane.find({ text: 'node_modules', in: 'mound' })).toBeUndefined()
+  expect(await pane.find({ text: /main \(opus\)/, in: 'mound' })).toBeDefined()
 
   // Reading a nested file opens its directory.
   await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts` } as never)
   await clock.advance(120 * 30)
-  expect(await pane.find({ text: 'main.ts' })).toBeDefined()
+  expect(await pane.find({ text: 'main.ts', in: 'mound' })).toBeDefined()
 
   // Writing a new file builds its branch, then the ant goes home.
   await $.tool.call({ tool: 'Write', file_path: `${CWD}/src/new.ts`, content: '' } as never)
   await clock.advance(120 * 40)
-  expect(await pane.find({ text: 'new.ts' })).toBeDefined()
+  expect(await pane.find({ text: 'new.ts', in: 'mound' })).toBeDefined()
 })
 
 test('ants saved by an older version are moved into the summit hole', async ($, on) => {
@@ -98,13 +98,14 @@ const session = async (
   missing: string[],
   saved: {
     rows?: { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[]
-    ants?: { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[]
+    ants?: { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number }; notice?: { ticks: number } }[]
     folds?: { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[]
     layout?: 'side' | 'strip'
     motion?: 'full' | 'quiet' | 'off'
     growth?: number
     contextPercent?: number
     dug?: unknown[]
+    poke?: { line: number; col: number; ticks: number }[]
     tick?: number
   }[] = [],
   /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job, or to deny/error it. */
@@ -115,13 +116,14 @@ const session = async (
   const clock = mock.clock(on)
   const latest = {
     rows: [] as { path: string; built?: number; flash?: { kind: 'error' | 'denied'; ticks: number } }[],
-    ants: [] as { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[],
+    ants: [] as { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number }; notice?: { ticks: number } }[],
     folds: [] as { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[],
     layout: 'side' as 'side' | 'strip',
     motion: 'full' as 'full' | 'quiet' | 'off',
     growth: 0,
     contextPercent: 0,
     dug: [] as { i: number; at: number }[],
+    poke: [] as { line: number; col: number; ticks: number }[],
     tick: 0,
     ticks: 0,
   }
@@ -144,6 +146,7 @@ const session = async (
     if (set.key === 'growth') latest.growth = set.value as number
     if (set.key === 'contextPercent') latest.contextPercent = set.value as number
     if (set.key === 'dug') latest.dug = set.value as typeof latest.dug
+    if (set.key === 'poke') latest.poke = set.value as typeof latest.poke
     if (set.key === 'tick') {
       latest.tick = set.value as number
       latest.ticks++
@@ -179,7 +182,7 @@ test('a Write sent while the ant is still out on a Read builds its branch, then 
   await clock.advance(120 * 5) // still crawling down the anthill
   await $.tool.call({ tool: 'Write', file_path: `${CWD}/src/new.ts`, content: '', tool_use_id: 'w1' } as never)
   await clock.advance(120 * 200)
-  expect(await pane.find({ text: 'new.ts' })).toBeDefined()
+  expect(await pane.find({ text: 'new.ts', in: 'mound' })).toBeDefined()
   expect(latest.rows.some(r => r.path === 'src/new.ts')).toBe(true)
   for (const r of latest.rows) expect(r.built).toBeUndefined()
   expect(latest.ants.every(a => a.task === 'home')).toBe(true)
@@ -200,7 +203,7 @@ test('a directory opened above a branch being built moves its ant down with it',
   expect(latest.rows.map(r => r.path)).toEqual(['lib', 'lib/a.ts', 'lib/b.ts', 'src', 'NOTES.md'])
   expect(latest.rows[main().at]!.path).toBe('NOTES.md')
   await clock.advance(120 * 200)
-  expect(await pane.find({ text: 'NOTES.md' })).toBeDefined()
+  expect(await pane.find({ text: 'NOTES.md', in: 'mound' })).toBeDefined()
   for (const r of latest.rows) expect(r.built).toBeUndefined()
   expect(await idles()).toBe(true)
 })
@@ -216,7 +219,7 @@ test('a half-built branch saved with no ant left to build it is shown complete',
   await idles(120 * 5)
   expect(latest.rows.map(r => r.path)).toEqual(['src', 'NEW.md', 'README.md'])
   for (const r of latest.rows) expect(r.built).toBeUndefined()
-  expect(await pane.find({ text: 'NEW.md' })).toBeDefined()
+  expect(await pane.find({ text: 'NEW.md', in: 'mound' })).toBeDefined()
   expect(await idles()).toBe(true)
 })
 
@@ -226,7 +229,7 @@ test('resting ants wiggle their antennae while idle, without advancing the simul
   const before = frameOf()
   expect(await idles(120 * 20)).toBe(true) // nothing to crawl to: the tick itself never moves
   expect(frameOf()).toBeGreaterThan(before) // but the ant resting in the hole still looks busy
-  expect(await pane.find({ text: 'README.md' })).toBeDefined()
+  expect(await pane.find({ text: 'README.md', in: 'mound' })).toBeDefined()
 })
 
 test(
@@ -344,7 +347,7 @@ test('a file tool call during an otherwise-busy turn takes over: busy becomes wa
   await $.tool.call({ tool: 'Read', file_path: `${CWD}/src/main.ts`, tool_use_id: 'r1' } as never)
   expect(latest.ants.find(a => a.id === 'main')?.task).toBe('walking')
   await clock.advance(120 * 30)
-  expect(await pane.find({ text: 'main.ts' })).toBeDefined()
+  expect(await pane.find({ text: 'main.ts', in: 'mound' })).toBeDefined()
 })
 
 test('a Read the permission prompt denies flashes that file\'s row and gives the ant a mishap; both fade, and the ant still heads home', async ($, on) => {
@@ -505,8 +508,8 @@ test('mainRow keeps the main ant\'s row visible over a farther, still-walking su
 
   // main's row stays visible even though the subagent, far below, would have been the
   // "lowest" (and so, under the old behavior, the one scrolled to) instead
-  expect(await pane.find({ text: 'f02.ts' })).toBeDefined()
-  expect(await pane.find({ text: 'f55.ts' })).toBeUndefined()
+  expect(await pane.find({ text: 'f02.ts', in: 'mound' })).toBeDefined()
+  expect(await pane.find({ text: 'f55.ts', in: 'mound' })).toBeUndefined()
 })
 
 test('session.compact shows a fold for the compacting id, animates while next(e) is pending, then clears a few ticks after it resolves', async ($, on) => {
@@ -819,6 +822,49 @@ test('once the mound has grown, a busy ant digs on past the base tunnel, into th
   expect(Math.max(...latest.dug.map(d => d.i))).toBeGreaterThanOrEqual(TUNNEL.length)
 })
 
+test('clicking an ant (posted as mound-client.tsx would) gives it a notice and toasts what it\'s doing; it fades on its own', async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pane.post({ hit: { kind: 'ant', id: 'main' }, x: 9, y: 1 }, { in: 'mound' })
+  expect(latest.ants.find(a => a.id === 'main')).toMatchObject({ notice: { ticks: expect.any(Number) } })
+  expect(toasts).toEqual(['main (opus): idle'])
+
+  await clock.advance(120 * (NOTICE_TICKS + 3))
+  expect(latest.ants.find(a => a.id === 'main')).not.toMatchObject({ notice: expect.anything() })
+})
+
+test('clicking a plain mound cell (posted as mound-client.tsx would) flinches it there; it fades on its own too', async ($, on) => {
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 }, { in: 'mound' })
+  expect(latest.poke).toEqual([{ line: 3, col: 6, ticks: expect.any(Number) }])
+
+  await clock.advance(120 * (POKE_TICKS + 3))
+  expect(latest.poke).toEqual([])
+})
+
+test('a real pointer click on the mound Client does the same thing end to end, not just a posted message', async ($, on) => {
+  const { latest, pane } = await session($, on, DIRS, [])
+
+  // (9, 1) is the hole's mouth: where a resting main's antennae peek, in its own color
+  await pane.pointer({ type: 'down', x: 9, y: 1, button: 'left', in: 'mound' })
+  expect(latest.ants.find(a => a.id === 'main')).toMatchObject({ notice: { ticks: expect.any(Number) } })
+})
+
+test('a malformed or unrelated ui.message is ignored, not acted on as a click', async ($, on) => {
+  const { latest, pane } = await session($, on, DIRS, [])
+
+  await pane.post({ nonsense: true }, { in: 'mound' })
+  await pane.post({ hit: { kind: 'ant' }, x: 1, y: 1 }, { in: 'mound' }) // no id
+  expect(latest.ants.find(a => a.id === 'main')?.notice).toBeUndefined()
+  expect(latest.poke).toEqual([])
+})
+
 test('a failed Read of a file that isn\'t on disk flashes its row, then the row is removed: no fake row left behind', async ($, on) => {
   const { clock, latest, idles } = await session($, on, DIRS, [`${CWD}/src/nope.ts`], [], () => ({ isError: true, result: 'File does not exist', text: 'File does not exist' }))
 
@@ -860,7 +906,7 @@ test('saved file rows whose files are no longer on disk are dropped when the ses
   ]
   const { latest, pane } = await session($, on, DIRS, [`${CWD}/GONE.md`], [{ rows } as never])
   expect(latest.rows.map(r => r.path)).toEqual(['src', 'README.md'])
-  expect(await pane.find({ text: 'GONE.md' })).toBeUndefined()
+  expect(await pane.find({ text: 'GONE.md', in: 'mound' })).toBeUndefined()
 })
 
 test('a subagent\'s own compaction is not main\'s: it neither folds the tree nor refactors the mound', async ($, on) => {

@@ -1,4 +1,4 @@
-import type { Row, Ant, Task, Breed, Fold, Dug } from '../types'
+import type { Row, Ant, Task, Breed, Fold, Dug, Poke } from '../types'
 import {
   MOUND,
   MOUND_PALETTE,
@@ -195,9 +195,14 @@ export const MISHAP_MARK: Record<'error' | 'denied', string> = { error: 'x', den
  * on the trail, on tree rows and in the hole alike, so the stumble reads as a change
  * to the ant itself rather than a steady recolor.
  */
+/** A clicked ant's cheerful, steady acknowledgement color — never blinks, unlike a mishap. */
+const NOTICE_COLOR = '#ffe066'
+
 /** `quiet` drops the blink: a mishap still shows (its own color/mark elsewhere), just doesn't flicker. */
-const antColor = (a: Ant, quiet?: boolean): string =>
-  a.mishap && !quiet && a.frame % 2 === 1 ? MISHAP_COLORS[a.mishap.kind] : a.color
+const antColor = (a: Ant, quiet?: boolean): string => {
+  if (a.notice) return NOTICE_COLOR
+  return a.mishap && !quiet && a.frame % 2 === 1 ? MISHAP_COLORS[a.mishap.kind] : a.color
+}
 
 // ---- work/build effects ---------------------------------------------------
 
@@ -212,7 +217,7 @@ export const workFx = (task: Task, frame: number): string => {
 
 // ---- composition -----------------------------------------------------------
 
-type Opts = {
+export type Opts = {
   width: number
   height: number
   tick: number
@@ -228,6 +233,8 @@ type Opts = {
   contextPercent?: number
   /** Reduced-motion mode: a mishap stops blinking between its own color and the mishap's; defaults to false. */
   quiet?: boolean
+  /** Mound cells poked recently, each still flinching; defaults to none. */
+  poke?: Poke[]
 }
 
 /**
@@ -306,6 +313,7 @@ const moundLines = (
   dug: Dug[],
   refactor?: Refactor,
   quiet?: boolean,
+  poke: Poke[] = [],
 ): Line[] => {
   const cells = moundCells(tick, shape, stage)
   const route = stageOf(shape, stage).tunnel
@@ -319,6 +327,13 @@ const moundLines = (
     if (!cell || !row) continue
     const { ch, color } = dugSprite(d.i, tick - d.at)
     paint(row, cell.col, ch, color)
+  }
+
+  // A clicked cell flinches, briefly, over whatever's drawn there — terrain, dug tunnel
+  // or an ant alike (an ant painted after this still shows on top: a poke never hides one).
+  for (const p of poke) {
+    const row = cells[p.line]
+    if (row) paint(row, p.col, POKE_CHAR, POKE_COLOR, true)
   }
 
   // The ants refactoring the anthill (main compacting): its loose light-shade cells and
@@ -444,6 +459,10 @@ const moundLines = (
 
 /** A busy ant's dot, digging through the mound body while it has no file to point to. */
 const BUSY_DOT = '•'
+
+/** A poked cell's brief impact mark, and its bright, unmistakably-temporary color. */
+const POKE_CHAR = '✱'
+const POKE_COLOR = '#fff2a8'
 
 /** A mound cell the refactoring ants have packed tight. */
 const PACKED_CHAR = '▒'
@@ -778,7 +797,7 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const mainColor = ants.find(a => a.id === mainFold?.id)?.color ?? MOUND_PALETTE.t!
   const refactor = mainFold ? refactorOf({ ...mainFold, grown: clamp(mainFold.grown ?? live) }, live, mainColor) : undefined
   const stage = refactor?.stage ?? live
-  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor, opts.quiet)
+  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor, opts.quiet, opts.poke ?? [])
   const indent = ' '.repeat(TREE_INDENT)
   const foldBlock: Line[] = folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))
 
@@ -874,4 +893,37 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   return orientation === 'horizontal'
     ? composeHorizontal(mound, foldBlock, legend, visible, indent, anchor, width, height, stageOf(shape, stage).mound)
     : composeVertical(mound, foldBlock, legend, visible, indent, anchor, width, height)
+}
+
+// ---- hit-testing: which ant or mound cell a click at (x, y) in compose()'s own output landed on ----
+//
+// Rather than threading a parallel grid through compose()'s whole pipeline (scrolling, folding,
+// zipping), this reads it back off compose()'s own finished Line[]: every ant's glyph is drawn in
+// its own color (or, blinking, a mishap's — antColor's only two cases) wherever it appears, on the
+// mound, the trail, in the hole or on a tree row, so a segment's color alone names the ant it is.
+// Clear of any ant, a mound row's own drawn (non-blank) cells are "the mound"; a tree row's own
+// name and indentation are neither — only an ant actually standing on it is clickable there too.
+
+export type Hit = { kind: 'mound' } | { kind: 'ant'; id: string }
+
+/**
+ * What's at column `x` of row `y` of a Pane's own `compose()` output: an ant (by id, however
+ * it's drawn there), a plain mound cell, or nothing — a bare tree row, the legend, a fold
+ * header, blank padding. `moundRows` is the mound block's own line count (`stageOf(...).mound.length`,
+ * the same for every stage): only those rows ever read as plain "mound" with no ant on them.
+ */
+export const hitAt = (lines: Line[], ants: Ant[], moundRows: number, x: number, y: number): Hit | undefined => {
+  const line = lines[y]
+  if (!line) return undefined
+  let col = 0
+  for (const seg of line) {
+    const width = Array.from(seg.text).length
+    if (x >= col && x < col + width) {
+      const ant = ants.find(a => a.color === seg.color || (a.mishap && MISHAP_COLORS[a.mishap.kind] === seg.color))
+      if (ant) return { kind: 'ant', id: ant.id }
+      return y < moundRows && seg.text.trim() !== '' ? { kind: 'mound' } : undefined
+    }
+    col += width
+  }
+  return undefined
 }

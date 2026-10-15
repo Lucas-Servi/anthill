@@ -1,11 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { Ant, Dug, Fold, Job, Layout, Mishap, Motion, Row } from '../types'
+import type { Ant, Dug, Fold, Job, Layout, Mishap, Motion, Poke, Row } from '../types'
 import {
   HOME,
   MISHAP_TICKS,
+  NOTICE_TICKS,
+  POKE_TICKS,
   QUIET_MISHAP_TICKS,
+  QUIET_NOTICE_TICKS,
+  QUIET_POKE_TICKS,
+  addPoke,
   assign,
   breedOf,
   clearBusy,
@@ -13,6 +18,7 @@ import {
   dig,
   drop,
   dropRows,
+  fadePokes,
   finish,
   markBusy,
   newAnt,
@@ -32,8 +38,10 @@ import {
   compose,
   learnRate,
   legendLines,
+  type Hit,
   type Line,
 } from './render'
+import type { MoundClientProps } from './mound-client'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -57,6 +65,7 @@ const growthAtom = atom({ plugin: 'anthill', key: 'growth' } as const, 0)
 const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as Dug[])
 const motionAtom = atom({ plugin: 'anthill', key: 'motion' } as const, 'full' as Motion)
 const contextPercentAtom = atom({ plugin: 'anthill', key: 'contextPercent' } as const, 0)
+const pokeAtom = atom({ plugin: 'anthill', key: 'poke' } as const, [] as Poke[])
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
@@ -75,6 +84,8 @@ let growth = 0
 let contextPercent = 0
 /** Tunnel cells some busy ant's dot has already dug through. */
 let dug: Dug[] = []
+/** Mound cells poked recently, each still flinching. */
+let poke: Poke[] = []
 /** Context tokens at which the mound reaches its last stage; read once at session.start. */
 let growthThreshold = Infinity
 /**
@@ -93,6 +104,7 @@ const publish = async ($: EngineInterface) => {
   await update($, growthAtom, () => growth)
   await update($, dugAtom, () => dug)
   await update($, contextPercentAtom, () => contextPercent)
+  await update($, pokeAtom, () => poke)
   // Two live reports of a frozen pane during a /compact and a working subagent turned
   // out to be an install running a stale build, not a redraw bug — so this isn't
   // confirmed necessary. It's kept anyway: $.ui.invalidate is the one documented way to
@@ -260,6 +272,25 @@ const resetGrowth = () => {
   contextPercent = 0
 }
 
+/** What an ant's toast says it's doing, for the person who just clicked it. */
+const describeAnt = (ant: Ant): string => {
+  if (ant.task === 'home') return 'idle'
+  if (ant.task === 'busy') return 'digging'
+  if (!ant.job) return ant.task === 'returning' ? 'heading home' : 'idle'
+  const verb = ant.task === 'walking' ? 'walking to' : ant.task === 'building' ? 'building' : 'working on'
+  return `${verb} ${ant.job.path}`
+}
+
+/** mound-client.tsx's post, as `surface.post({ hit, x, y })` sends it: code sent it, not a fact. */
+type ClickMessage = { hit: Hit; x: number; y: number }
+const isClickMessage = (data: unknown): data is ClickMessage => {
+  if (!data || typeof data !== 'object') return false
+  const d = data as Record<string, unknown>
+  if (typeof d.x !== 'number' || typeof d.y !== 'number' || !d.hit || typeof d.hit !== 'object') return false
+  const hit = d.hit as Record<string, unknown>
+  return hit.kind === 'mound' || (hit.kind === 'ant' && typeof hit.id === 'string')
+}
+
 export const register: Register = (on, options) => {
   const motionDefault = pickOption(options, 'motion', ['full', 'quiet', 'off'] as const, 'full')
 
@@ -284,6 +315,7 @@ export const register: Register = (on, options) => {
     dug = ((await read($, dugAtom)) as unknown[]).flatMap((d): Dug[] =>
       typeof d === 'number' ? [{ i: d, at: tick }] : d && typeof d === 'object' ? [d as Dug] : [],
     )
+    poke = await read($, pokeAtom)
     growth = await read($, growthAtom)
     contextPercent = await read($, contextPercentAtom)
     // $.store, not just $.state, since this is the one thing meant to outlive the
@@ -332,9 +364,10 @@ export const register: Register = (on, options) => {
       // every firing is this one check instead of a full step()/publish() pass.
       if (motion === 'off') return
       const busy =
-        ants.some(a => a.task !== 'home' || a.leaving || a.mishap) ||
+        ants.some(a => a.task !== 'home' || a.leaving || a.mishap || a.notice) ||
         rows.some(r => r.built !== undefined || r.flash) ||
-        folds.length > 0
+        folds.length > 0 ||
+        poke.length > 0
       if (!busy) {
         // Nothing to crawl to: the ants resting in the hole still look busy down
         // there, with a slow antennae wiggle (dropped in quiet mode). The simulation
@@ -364,6 +397,7 @@ export const register: Register = (on, options) => {
         const route = stageOf(SHAPES[layout === 'strip' ? 'horizontal' : 'vertical'], growth).tunnel
         dug = dig(dug, ants, route.length, tick)
       }
+      poke = fadePokes(poke)
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         // (a settled fold's frame stays put: `peak` already says how far the tree folded)
@@ -568,34 +602,60 @@ export const register: Register = (on, options) => {
     return ran
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+  // A click mound-client.tsx's `onPointer` hit-tested against its own last drawing: an
+  // ant (by id) gets a brief, cheerful notice and a toast of what it's doing; a plain
+  // mound cell gets a brief flinch where it was clicked. Neither ever lasts.
+  on('ui.message', async ($, e, next) => {
+    if (e.component !== 'Pane' || !isClickMessage(e.data)) return next(e)
+    const { hit, x, y } = e.data
+    if (hit.kind === 'ant') {
+      const ant = ants.find(a => a.id === hit.id)
+      if (ant) {
+        setAnt({ ...ant, notice: { ticks: motion === 'quiet' ? QUIET_NOTICE_TICKS : NOTICE_TICKS } })
+        $.ui.toast(`${ant.label} (${ant.breed}): ${describeAnt(ant)}`)
+        await publish($)
+      }
+    } else {
+      poke = addPoke(poke, y, x, motion === 'quiet' ? QUIET_POKE_TICKS : POKE_TICKS)
+      await publish($)
+    }
+    return {}
+  }).catch(($, e, next) => next(e))
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // Client (so a click can be hit-tested) exists on terminal and desktop today, not
+    // vscode or mobile: there, this falls back to the engine's own default drawing.
+    if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
+    const { Box, Button, Client } = $.ui.resolve(e)
     const readAnts = await read($, antsAtom)
     const main = readAnts.find(a => a.id === MAIN)
     const width = Math.max(10, e.props.bodyColumns || 40)
     const height = Math.max(8, e.props.scroll.bodyRows || 30)
-    const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
-      width,
-      height: height - 1, // one row held for the layout button below
-      tick: await read($, tickAtom),
-      mainRow: main && main.at >= 0 ? main.at : undefined,
-      growth: await read($, growthAtom),
-      dug: await read($, dugAtom),
-      contextPercent: await read($, contextPercentAtom),
-      quiet: motion === 'quiet' || motion === 'off',
-    })
+    // One row held for the layout button below, outside the Client (it isn't clickable
+    // content, and the Client only ever reports a click inside its own region anyway).
+    const bodyHeight = height - 1
+    // Client props cross into a separate, sandboxed module as plain JSON: no key may
+    // hold `undefined` (mainRow's own, past this point), unlike compose()'s own opts.
+    const clientProps: MoundClientProps = {
+      rows: await read($, rowsAtom),
+      ants: readAnts,
+      folds: await read($, foldsAtom),
+      opts: {
+        width,
+        height: bodyHeight,
+        tick: await read($, tickAtom),
+        growth: await read($, growthAtom),
+        dug: await read($, dugAtom),
+        contextPercent: await read($, contextPercentAtom),
+        quiet: motion === 'quiet' || motion === 'off',
+        poke: await read($, pokeAtom),
+        ...(main && main.at >= 0 ? { mainRow: main.at } : {}),
+      },
+    }
 
     return (
       <Box flexDirection="column">
-        {lines.map(line => (
-          <Text wrap="truncate-end">
-            {line.map(seg => (
-              <Text color={seg.color} backgroundColor={seg.bg} dimColor={seg.dim} bold={seg.bold}>
-                {seg.text}
-              </Text>
-            ))}
-          </Text>
-        ))}
+        <Client key="mound" module="./mound-client.tsx" width={width} height={bodyHeight} props={clientProps} />
         <Box justifyContent="flex-end">
           <Button
             key="to-strip"
@@ -637,6 +697,7 @@ export const register: Register = (on, options) => {
       legend: false, // drawn beside the button below instead, so it never costs the strip a row
       contextPercent: cp,
       quiet: motion === 'quiet',
+      poke: await read($, pokeAtom),
     })
     // the legend's first line (plus the context readout), leaving the button room at the row's end
     const legendRow: Line =

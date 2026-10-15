@@ -102,6 +102,12 @@ export type Ant = {
    * between its own color and the mishap's for as long as this lasts, then fades.
    */
   mishap?: Mishap
+  /**
+   * Set when it was clicked: a brief, cosmetic acknowledgement (its glyph draws bold
+   * with a small mark, for as long as this lasts), decremented once a tick by step().
+   * Never affects task/at logic, same as climbDepth — purely a reaction to being poked.
+   */
+  notice?: { ticks: number }
 }
 
 /**
@@ -141,6 +147,14 @@ export type Fold = {
  */
 export type Dug = { i: number; at: number }
 
+/**
+ * A cell of the mound clicked, shown flinching (a brief dust-puff/dent, never a lasting
+ * mark) for as long as `ticks` lasts, decremented once a tick in register.tsx. `line`/`col`
+ * are the same picture coordinates render.ts's `paint()` uses, not a tunnel-route index
+ * (unlike Dug): a poke can land anywhere drawn, not just along the fixed tunnel.
+ */
+export type Poke = { line: number; col: number; ticks: number }
+
 /** Where the anthill is drawn: the usual docked/inline pane, or the strip above the prompt. */
 export type Layout = 'side' | 'strip'
 
@@ -162,6 +176,8 @@ declare module 'claude-code' {
       dug: Dug[]
       /** How full the context window is against the auto-compact threshold, 0..100(+); 0 until measured, same as growth. */
       contextPercent: number
+      /** Mound cells poked recently, each fading on its own; capped so a burst of clicks can't grow it without bound. */
+      poke: Poke[]
     }
   }
 }

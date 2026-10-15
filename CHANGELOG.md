@@ -2,6 +2,18 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.8.0]
+
+- Added click interaction: clicking an ant gives it a brief, cheerful
+  acknowledgement and a toast of what it's doing right now; clicking the
+  mound flinches briefly where you clicked. Neither leaves a lasting mark.
+  Only works while the pane is docked in a fullscreen terminal, the one
+  place a terminal reports clicks at all — the strip and a narrow terminal's
+  inline pane are unaffected.
+- Under the hood: the pane's own body now draws through a `Client` surface
+  module (`hooks/mound-client.tsx`), so a click over it can be reported;
+  `compose()`'s own output and every existing test are unchanged.
+
 ## [0.7.0]
 
 - Added a kill switch / reduced-motion mode: a new `Animation` setting

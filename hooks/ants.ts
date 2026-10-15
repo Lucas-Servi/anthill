@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import type { Ant, Breed, Dug, Job, Row } from '../types'
+import type { Ant, Breed, Dug, Job, Poke, Row } from '../types'
 import { HOME, PEEKS, SUMMIT, TUNNEL_SEATS } from './mound'
 import { BUILD_STEPS, isBuilt } from './tree'
 
@@ -17,6 +17,18 @@ export const MISHAP_TICKS = 40
 
 /** A mishap/flash's duration in quiet mode: still noticeable, far shorter than MISHAP_TICKS. */
 export const QUIET_MISHAP_TICKS = 8
+
+/** How many ticks a clicked ant's acknowledgement shows: ~1s at TICK_MS (120ms) a tick. */
+export const NOTICE_TICKS = 8
+/** A notice's duration in quiet mode: brisker still, matching QUIET_MISHAP_TICKS. */
+export const QUIET_NOTICE_TICKS = 4
+
+/** How many ticks a poked mound cell's flinch shows: ~1.5s at TICK_MS a tick. */
+export const POKE_TICKS = 12
+/** A poke's duration in quiet mode. */
+export const QUIET_POKE_TICKS = 6
+/** The most pokes kept at once: a burst of clicks drops the oldest rather than growing without bound. */
+export const POKE_CAP = 8
 
 /**
  * A walking ant leaves the hole only when no other ant is on the first GATE
@@ -157,6 +169,18 @@ export function dig(dug: Dug[], ants: Ant[], length: number, tick: number): Dug[
   return [...byIndex.values()].sort((x, y) => x.i - y.i)
 }
 
+/** Adds a fresh poke at `line`/`col`, dropping the oldest past POKE_CAP. */
+export function addPoke(pokes: Poke[], line: number, col: number, ticks: number): Poke[] {
+  const next = [...pokes, { line, col, ticks }]
+  return next.length > POKE_CAP ? next.slice(next.length - POKE_CAP) : next
+}
+
+/** Decrements every poke by one tick, dropping any that reach 0. */
+export function fadePokes(pokes: Poke[]): Poke[] {
+  if (pokes.length === 0) return pokes
+  return pokes.flatMap(p => (p.ticks <= 1 ? [] : [{ ...p, ticks: p.ticks - 1 }]))
+}
+
 /** Decrements an ant's mishap by one tick, dropping it once it reaches 0. */
 function fadeMishap(ant: Ant): Ant {
   if (!ant.mishap) return ant
@@ -165,6 +189,16 @@ function fadeMishap(ant: Ant): Ant {
     return rest
   }
   return { ...ant, mishap: { ...ant.mishap, ticks: ant.mishap.ticks - 1 } }
+}
+
+/** Decrements an ant's click-notice by one tick, dropping it once it reaches 0. */
+function fadeNotice(ant: Ant): Ant {
+  if (!ant.notice) return ant
+  if (ant.notice.ticks <= 1) {
+    const { notice, ...rest } = ant
+    return rest
+  }
+  return { ...ant, notice: { ticks: ant.notice.ticks - 1 } }
 }
 
 /**
@@ -380,8 +414,9 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
   let canLeave = gateOpen(ants)
 
   for (const prev of ants) {
-    // the mishap fades on every tick regardless of task, so one that lingers home still clears
-    let ant: Ant = fadeMishap({ ...prev, frame: prev.frame + 1 })
+    // the mishap and any click-notice fade on every tick regardless of task, so one
+    // that lingers home still clears
+    let ant: Ant = fadeNotice(fadeMishap({ ...prev, frame: prev.frame + 1 }))
     if (ant.at >= nextRows.length) ant.at = nextRows.length - 1
     if (ant.at < HOME) ant.at = HOME
     const start = ant.at

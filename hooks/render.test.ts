@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
 import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { foldTree, foldProgress, compactMs, learnRate, COMPACT_BASE_MS, COMPACT_MS_PER_TOKEN, SETTLE_TICKS, MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, lineText, type Line } from './render'
+import { foldTree, foldProgress, compactMs, learnRate, COMPACT_BASE_MS, COMPACT_MS_PER_TOKEN, SETTLE_TICKS, MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, hitAt, lineText, type Line } from './render'
 import {
   GROWTH,
   GROWTH_STAGES,
@@ -931,6 +931,53 @@ test('stageOf clamps a stage out of range, or not a whole number, to a real one'
   expect(stageOf(shape, -3)).toBe(shape.stages[0])
   expect(stageOf(shape, 999)).toBe(shape.stages.at(-1))
   expect(stageOf(shape, Number.NaN)).toBe(shape.stages[0])
+})
+
+// ---- hit-testing: which ant or mound cell a click at (x, y) lands on -------
+
+test('hitAt finds a home ant peeking from the hole, by its own color', () => {
+  const a = ant({ id: 'm', color: '#123456' })
+  const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })
+  expect(hitAt(lines, [a], MOUND.length, 9, 1)).toEqual({ kind: 'ant', id: 'm' })
+})
+
+test('hitAt reads a plain, ant-free mound cell as "mound"; blank padding as nothing', () => {
+  const lines = compose(TREE, [], [], { width: 40, height: 20, tick: 0 })
+  expect(hitAt(lines, [], MOUND.length, 6, 3)).toEqual({ kind: 'mound' }) // the shaded body
+  expect(hitAt(lines, [], MOUND.length, 0, 0)).toBeUndefined() // blank padding on the sparkle line
+})
+
+test('hitAt finds an ant standing on a tree row, and its highlighted name too; an unassociated row stays unclickable', () => {
+  const rows: Row[] = [row({ name: 'main.ts', path: 'main.ts' }), row({ name: 'other.ts', path: 'other.ts', depth: 0 })]
+  const a = ant({ id: 'w', task: 'working', at: 0, color: '#654321' })
+  const lines = compose(rows, [a], [], { width: 40, height: 20, tick: 0 })
+
+  const workedLine = lines.find(l => lineText(l).includes('main.ts'))!
+  const y = lines.indexOf(workedLine)
+  const glyphCol = lineText(workedLine).indexOf(antGlyph('sonnet', 'working', 0))
+  expect(hitAt(lines, [a], MOUND.length, glyphCol, y)).toEqual({ kind: 'ant', id: 'w' })
+  // compose() draws the row's own name in the standing ant's color (it's "highlighting"
+  // it): visually that name is the ant's too, so a click there also finds it.
+  const nameCol = lineText(workedLine).indexOf('main.ts')
+  expect(hitAt(lines, [a], MOUND.length, nameCol, y)).toEqual({ kind: 'ant', id: 'w' })
+
+  // a row no ant stands on or near keeps its own plain color: not an ant, not the mound
+  const bareLine = lines.find(l => lineText(l).includes('other.ts'))!
+  const bareY = lines.indexOf(bareLine)
+  const bareNameCol = lineText(bareLine).indexOf('other.ts')
+  expect(hitAt(lines, [a], MOUND.length, bareNameCol, bareY)).toBeUndefined()
+})
+
+test('hitAt still finds a blinking (mishap-colored) ant, not just its own color', () => {
+  const a = ant({ id: 'm', color: '#123456', frame: 1, mishap: { kind: 'denied', ticks: 5 } })
+  const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })
+  expect(hitAt(lines, [a], MOUND.length, 9, 1)).toEqual({ kind: 'ant', id: 'm' })
+})
+
+test('hitAt is undefined past a line\'s width or the drawing\'s own height', () => {
+  const lines = compose(TREE, [], [], { width: 40, height: 20, tick: 0 })
+  expect(hitAt(lines, [], MOUND.length, 999, 1)).toBeUndefined()
+  expect(hitAt(lines, [], MOUND.length, 0, 999)).toBeUndefined()
 })
 
 // ---- mishaps and flashes ----------------------------------------------------

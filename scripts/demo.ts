@@ -96,6 +96,17 @@ printScene(
   }),
 )
 
+// ---- scene 4: clicking the mound and an ant --------------------------------
+printScene(
+  'clicked: main gets a brief cheerful notice, and the mound flinches where it was poked',
+  compose(
+    ROWS,
+    [ant({ id: 'main', label: 'main', breed: 'opus', color: '#ff5f5f', at: 1, task: 'working', notice: { ticks: 6 } })],
+    [],
+    { width: 70, height: 18, tick: 0, poke: [{ line: 3, col: 6, ticks: 10 }] },
+  ),
+)
+
 console.log(
   '\n\x1b[2mNot shown: "/anthill quiet" and "/anthill off" (the kill switch) — their effect is the absence of' +
     ' motion over time (no idle wiggle, no blink, no tunnel decoration, or nothing moving at all), which a single' +
