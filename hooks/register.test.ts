@@ -1,6 +1,6 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
 import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
-import { MISHAP_TICKS, NOTICE_TICKS, POKE_TICKS, STALE_TICKS } from './ants'
+import { DANCE_CLICKS, DANCE_TICKS, MISHAP_TICKS, NOTICE_TICKS, POKE_TICKS, STALE_TICKS } from './ants'
 import { SETTLE_TICKS, compactMs } from './render'
 
 /** A number rounded to 6 places, for comparing computed fractions. */
@@ -106,6 +106,7 @@ const session = async (
     contextPercent?: number
     dug?: unknown[]
     poke?: { line: number; col: number; ticks: number }[]
+    dance?: number
     tick?: number
   }[] = [],
   /** Overrides the default instant-'ok' tool.call response, e.g. to park an ant mid-job, or to deny/error it. */
@@ -124,6 +125,7 @@ const session = async (
     contextPercent: 0,
     dug: [] as { i: number; at: number }[],
     poke: [] as { line: number; col: number; ticks: number }[],
+    dance: 0,
     tick: 0,
     ticks: 0,
   }
@@ -147,6 +149,7 @@ const session = async (
     if (set.key === 'contextPercent') latest.contextPercent = set.value as number
     if (set.key === 'dug') latest.dug = set.value as typeof latest.dug
     if (set.key === 'poke') latest.poke = set.value as typeof latest.poke
+    if (set.key === 'dance') latest.dance = set.value as number
     if (set.key === 'tick') {
       latest.tick = set.value as number
       latest.ticks++
@@ -870,6 +873,66 @@ test('clicks within 3s of one that landed are ignored, ant or mound alike; one a
   await clock.advance(2100)
   await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 }, { in: 'mound' })
   expect(latest.poke).toEqual([{ line: 3, col: 6, ticks: expect.any(Number) }])
+})
+
+/** Pokes the mound `n` times, one click every 3s (the cooldown's own length, so each one lands). */
+const pokeMound = async (pane: { post: (data: never, scope: { in: string }) => Promise<void> }, clock: { advance: (ms: number) => Promise<void> }, n: number) => {
+  for (let i = 0; i < n; i++) {
+    if (i > 0) await clock.advance(3000)
+    await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 } as never, { in: 'mound' })
+  }
+}
+
+test('more than ten pokes of the mound in a minute set the colony dancing, with a toast; the dance ends on its own', { timeoutMs: 20000 }, async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pokeMound(pane as never, clock, DANCE_CLICKS - 1)
+  expect(latest.dance).toBe(0) // ten isn't more than ten
+  await clock.advance(3000)
+  await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 }, { in: 'mound' })
+  expect(latest.dance).toBe(DANCE_TICKS)
+  expect(toasts.filter(t => t.includes('dancing'))).toHaveLength(1)
+  expect(await pane.find({ text: /the colony dances/, in: 'mound' })).toBeDefined()
+
+  await clock.advance(120 * (DANCE_TICKS + 2))
+  expect(latest.dance).toBe(0)
+  expect(await pane.find({ text: /the colony dances/, in: 'mound' })).toBeUndefined()
+})
+
+test('a second burst of pokes right after a dance doesn\'t dance again: once every ten minutes at most', { timeoutMs: 20000 }, async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pokeMound(pane as never, clock, DANCE_CLICKS)
+  expect(toasts.filter(t => t.includes('dancing'))).toHaveLength(1)
+  await clock.advance(120 * (DANCE_TICKS + 2))
+
+  await clock.advance(3000)
+  await pokeMound(pane as never, clock, DANCE_CLICKS)
+  expect(latest.dance).toBe(0)
+  expect(toasts.filter(t => t.includes('dancing'))).toHaveLength(1)
+})
+
+test('in quiet mode enough pokes still toast, but the colony doesn\'t dance (it\'s all motion)', { options: { motion: 'quiet' }, timeoutMs: 20000 }, async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pokeMound(pane as never, clock, DANCE_CLICKS)
+  expect(toasts.filter(t => t.includes('dancing'))).toHaveLength(1)
+  expect(latest.dance).toBe(0)
 })
 
 test('a real pointer click on the mound Client does the same thing end to end, not just a posted message', async ($, on) => {

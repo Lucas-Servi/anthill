@@ -27,6 +27,10 @@ import {
   reconcile,
   STALE_TICKS,
   MISHAP_TICKS,
+  tallyClick,
+  DANCE_CLICKS,
+  DANCE_WINDOW_MS,
+  DANCE_COOLDOWN_MS,
 } from './ants'
 import { SUMMIT, TRAIL, TUNNEL, TUNNEL_SEATS, GROWTH, H_GROWTH, GROWTH_STAGES, stageFor } from './mound'
 
@@ -1121,4 +1125,46 @@ test('a ghost row stays while it flashes or an ant still means to go there, and 
   const walker: Ant = { ...newAnt('v', 'x', 'other', '#fff'), at: HOME, task: 'walking', job: { id: 'k', path: 'gone.ts', kind: 'work' } }
   const held = step([walker], [{ ...ghost, flash: undefined }])
   expect(held.rows.map((r) => r.path)).toEqual(['gone.ts'])
+})
+
+test('tallyClick: more than ten mound clicks within a minute set the colony dancing, and start the count over', () => {
+  let clicks: number[] = []
+  for (let i = 0; i < DANCE_CLICKS - 1; i++) {
+    const t = tallyClick(clicks, i * 3000, undefined)
+    expect(t.dance).toBe(false)
+    clicks = t.clicks
+  }
+  expect(clicks).toHaveLength(DANCE_CLICKS - 1)
+  const t = tallyClick(clicks, (DANCE_CLICKS - 1) * 3000, undefined)
+  expect(t.dance).toBe(true)
+  expect(t.clicks).toEqual([])
+})
+
+test('tallyClick: clicks older than the window drop out, so a slow trickle never dances', () => {
+  let clicks: number[] = []
+  let danced = false
+  for (let i = 0; i < 40; i++) {
+    const t = tallyClick(clicks, i * 6500, undefined) // under ten a minute
+    danced ||= t.dance
+    clicks = t.clicks
+  }
+  expect(danced).toBe(false)
+  expect(clicks.length).toBeLessThan(DANCE_CLICKS)
+  expect(clicks.every(c => 39 * 6500 - c < DANCE_WINDOW_MS)).toBe(true)
+})
+
+test('tallyClick: no second dance until ten minutes after the last began', () => {
+  const burst = (from: number, last: number | undefined) => {
+    let clicks: number[] = []
+    let danced = false
+    for (let i = 0; i < DANCE_CLICKS; i++) {
+      const t = tallyClick(clicks, from + i * 3000, last)
+      danced ||= t.dance
+      clicks = t.clicks
+    }
+    return danced
+  }
+  const first = 30_000 // the first dance began here
+  expect(burst(first + 60_000, first)).toBe(false) // a minute later: too soon
+  expect(burst(first + DANCE_COOLDOWN_MS - 30_000, first)).toBe(true) // its last click lands at the ten-minute mark
 })

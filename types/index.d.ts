@@ -178,6 +178,8 @@ declare module 'claude-code' {
       contextPercent: number
       /** Mound cells poked recently, each fading on its own; capped so a burst of clicks can't grow it without bound. */
       poke: Poke[]
+      /** Ticks left of the colony's dance (a reward for poking the mound a lot); 0 when it isn't dancing. */
+      dance: number
     }
   }
 }

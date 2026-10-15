@@ -181,6 +181,26 @@ export function fadePokes(pokes: Poke[]): Poke[] {
   return pokes.flatMap(p => (p.ticks <= 1 ? [] : [{ ...p, ticks: p.ticks - 1 }]))
 }
 
+/** How many mound clicks within DANCE_WINDOW_MS set the colony dancing: more than ten. */
+export const DANCE_CLICKS = 11
+export const DANCE_WINDOW_MS = 60_000
+/** The least time between two dances, from the start of one to the start of the next. */
+export const DANCE_COOLDOWN_MS = 10 * 60_000
+/** How many ticks a dance lasts: about 5s at TICK_MS (120ms) a tick. */
+export const DANCE_TICKS = 40
+
+/**
+ * Counts a mound click that landed at `at` (ms) among `clicks` (the earlier ones), and says
+ * whether it sets the colony dancing: DANCE_CLICKS of them within DANCE_WINDOW_MS, with
+ * DANCE_COOLDOWN_MS gone by since the last dance began (`last`). Clicks older than the
+ * window drop out; a dance starts the count over, so the next needs as many again.
+ */
+export function tallyClick(clicks: number[], at: number, last: number | undefined): { clicks: number[]; dance: boolean } {
+  const recent = [...clicks.filter(t => at - t < DANCE_WINDOW_MS), at]
+  const dance = recent.length >= DANCE_CLICKS && (last === undefined || at - last >= DANCE_COOLDOWN_MS)
+  return { clicks: dance ? [] : recent, dance }
+}
+
 /** Decrements an ant's mishap by one tick, dropping it once it reaches 0. */
 function fadeMishap(ant: Ant): Ant {
   if (!ant.mishap) return ant

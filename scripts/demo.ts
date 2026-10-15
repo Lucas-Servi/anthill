@@ -2,14 +2,14 @@
  * A scratch renderer, not part of the plugin: prints a few representative
  * scenes straight to a real ANSI terminal, using only render.ts/mound.ts's
  * own pure functions — the same picture the pane would draw, with no engine,
- * no hooks, nothing live. For capturing a screenshot or a short recording for
+ * no hooks, nothing live (scene 5 shows a dance, a few ticks apart). For capturing a screenshot or a short recording for
  * the README, or just checking a change by eye. See the README's Develop
  * section for how to run it (needs bundling first: this repo has no
  * package.json/bundler of its own).
  */
 import type { Ant, Dug, Fold, Row } from '../types'
 import { compose, type Line } from '../hooks/render'
-import { GROWTH_STAGES } from '../hooks/mound'
+import { GROWTH_STAGES, HOME } from '../hooks/mound'
 
 /** Turns one Line into a real ANSI-escaped string for a terminal to print. */
 const toAnsi = (line: Line): string =>
@@ -106,6 +106,19 @@ printScene(
     { width: 70, height: 18, tick: 0, poke: [{ line: 3, col: 6, ticks: 10 }] },
   ),
 )
+
+// ---- scene 5: the colony dancing (the mound poked more than 10 times in a minute) ----
+const dancers = [
+  ant({ id: 'main', label: 'main', breed: 'opus', color: '#ff5f5f', at: HOME, task: 'home' }),
+  ant({ id: 'sub1', label: 'explore', breed: 'sonnet', color: '#5fff5f', at: HOME, task: 'home' }),
+  ant({ id: 'sub2', label: 'review', breed: 'haiku', color: '#ffff5f', at: HOME, task: 'home' }),
+]
+for (const tick of [0, 1, 2, 3]) {
+  printScene(
+    `the colony dances, tick ${tick}`,
+    compose(ROWS, dancers, [], { width: 70, height: 18, tick, dance: true }).slice(0, 8),
+  )
+}
 
 console.log(
   '\n\x1b[2mNot shown: "/anthill quiet" and "/anthill off" (the kill switch) — their effect is the absence of' +

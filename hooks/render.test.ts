@@ -980,6 +980,56 @@ test('hitAt is undefined past a line\'s width or the drawing\'s own height', () 
   expect(hitAt(lines, [], MOUND.length, 0, 999)).toBeUndefined()
 })
 
+// ---- the dance: the mound poked a lot ----------------------------------------
+
+test('dancing, the hole\'s ants come out on top of the mound in their own colors, with no antennae left in the hole', () => {
+  const a = ant({ id: 'm', color: '#123456' })
+  const b = ant({ id: 's', breed: 'haiku', color: '#654321' })
+  const lines = compose(TREE, [a, b], [], { width: 40, height: 20, tick: 0, dance: true })
+  const top = cells(lines[SPARKLE_LINE])
+  expect(lineText(lines[SPARKLE_LINE]!)).toContain(antGlyph('sonnet', 'walking', 0))
+  expect(lineText(lines[SPARKLE_LINE]!)).toContain(antGlyph('haiku', 'walking', 1)) // legs kicking in turn
+  expect(top.some(c => c.color === '#123456')).toBe(true)
+  expect(top.some(c => c.color === '#654321')).toBe(true)
+  for (const p of PEEKS) expect([PEEK, "'"]).not.toContain(cells(lines[p.line])[p.col]?.ch)
+})
+
+test('dancing, a header says so; not dancing, nothing of it is drawn', () => {
+  const a = ant({ id: 'm' })
+  const dancing = compose(TREE, [a], [], { width: 40, height: 20, tick: 0, dance: true })
+  expect(dancing.some(l => lineText(l).includes('the colony dances'))).toBe(true)
+  const still = compose(TREE, [a], [], { width: 40, height: 20, tick: 0 })
+  expect(still.some(l => lineText(l).includes('the colony dances'))).toBe(false)
+  expect(still).toEqual(compose(TREE, [a], [], { width: 40, height: 20, tick: 0, dance: false }))
+})
+
+test('the dancers sway: over a few ticks they don\'t all stand at one column', () => {
+  const a = ant({ id: 'm', color: '#123456' })
+  const firstCol = (tick: number) =>
+    cells(compose(TREE, [a], [], { width: 40, height: 20, tick, dance: true })[SPARKLE_LINE]).findIndex(c => c.color === '#123456')
+  expect(new Set([0, 2, 4, 6].map(firstCol)).size).toBeGreaterThan(1)
+})
+
+test('a click on a dancer still finds that ant; one on the confetti reads as the mound', () => {
+  const a = ant({ id: 'm', color: '#123456' })
+  const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0, dance: true })
+  const top = cells(lines[SPARKLE_LINE])
+  const dancerCol = top.findIndex(c => c.color === '#123456')
+  expect(hitAt(lines, [a], MOUND.length, dancerCol, SPARKLE_LINE)).toEqual({ kind: 'ant', id: 'm' })
+  const confettiCol = top.findIndex(c => c.ch.trim() !== '' && c.color !== '#123456')
+  expect(hitAt(lines, [a], MOUND.length, confettiCol, SPARKLE_LINE)).toEqual({ kind: 'mound' })
+})
+
+test('dancing, every line still fits the width, in both layouts', () => {
+  const ants = ['a', 'b', 'c', 'd', 'e'].map((id, i) => ant({ id, breed: (['opus', 'fable', 'sonnet', 'haiku', 'other'] as const)[i] }))
+  for (const orientation of ['vertical', 'horizontal'] as const) {
+    for (const width of [25, 40]) {
+      const lines = compose(TREE, ants, [], { width, height: 20, tick: 3, dance: true, orientation })
+      for (const l of lines) expect(Array.from(lineText(l)).length).toBeLessThanOrEqual(width)
+    }
+  }
+})
+
 // ---- mishaps and flashes ----------------------------------------------------
 
 test('a busy ant\'s tunnel dot with a mishap is drawn as its marker, in the mishap\'s color, instead of the plain dot', () => {

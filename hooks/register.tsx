@@ -3,6 +3,8 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { Ant, Dug, Fold, Job, Layout, Mishap, Motion, Poke, Row } from '../types'
 import {
+  DANCE_CLICKS,
+  DANCE_TICKS,
   HOME,
   MISHAP_TICKS,
   NOTICE_TICKS,
@@ -28,6 +30,7 @@ import {
   seatPeeks,
   shiftForInsert,
   step,
+  tallyClick,
 } from './ants'
 import { GROWTH_STAGES, SHAPES, stageFor, stageOf } from './mound'
 import {
@@ -70,6 +73,7 @@ const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as Dug[])
 const motionAtom = atom({ plugin: 'anthill', key: 'motion' } as const, 'full' as Motion)
 const contextPercentAtom = atom({ plugin: 'anthill', key: 'contextPercent' } as const, 0)
 const pokeAtom = atom({ plugin: 'anthill', key: 'poke' } as const, [] as Poke[])
+const danceAtom = atom({ plugin: 'anthill', key: 'dance' } as const, 0)
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
@@ -90,6 +94,8 @@ let contextPercent = 0
 let dug: Dug[] = []
 /** Mound cells poked recently, each still flinching. */
 let poke: Poke[] = []
+/** Ticks left of the colony's dance; 0 when it isn't dancing. */
+let dance = 0
 /** Context tokens at which the mound reaches its last stage; read once at session.start. */
 let growthThreshold = Infinity
 /**
@@ -100,6 +106,9 @@ let compactRate: number | undefined
 const COMPACT_RATE_KEY = 'compactMsPerToken'
 /** When the last click that did something landed ($.clock.now()), for CLICK_COOLDOWN_MS. */
 let lastClickAt: number | undefined
+/** When the mound clicks still counting toward a dance landed (ants.ts tallyClick), and when the last dance began. */
+let moundClicks: number[] = []
+let lastDanceAt: number | undefined
 
 const publish = async ($: EngineInterface) => {
   ants = seatOrbits(seatPeeks(ants))
@@ -111,6 +120,7 @@ const publish = async ($: EngineInterface) => {
   await update($, dugAtom, () => dug)
   await update($, contextPercentAtom, () => contextPercent)
   await update($, pokeAtom, () => poke)
+  await update($, danceAtom, () => dance)
   // Two live reports of a frozen pane during a /compact and a working subagent turned
   // out to be an install running a stale build, not a redraw bug — so this isn't
   // confirmed necessary. It's kept anyway: $.ui.invalidate is the one documented way to
@@ -322,7 +332,10 @@ export const register: Register = (on, options) => {
       typeof d === 'number' ? [{ i: d, at: tick }] : d && typeof d === 'object' ? [d as Dug] : [],
     )
     poke = await read($, pokeAtom)
+    dance = await read($, danceAtom)
     lastClickAt = undefined
+    moundClicks = []
+    lastDanceAt = undefined
     growth = await read($, growthAtom)
     contextPercent = await read($, contextPercentAtom)
     // $.store, not just $.state, since this is the one thing meant to outlive the
@@ -374,7 +387,8 @@ export const register: Register = (on, options) => {
         ants.some(a => a.task !== 'home' || a.leaving || a.mishap || a.notice) ||
         rows.some(r => r.built !== undefined || r.flash) ||
         folds.length > 0 ||
-        poke.length > 0
+        poke.length > 0 ||
+        dance > 0
       if (!busy) {
         // Nothing to crawl to: the ants resting in the hole still look busy down
         // there, with a slow antennae wiggle (dropped in quiet mode). The simulation
@@ -405,6 +419,7 @@ export const register: Register = (on, options) => {
         dug = dig(dug, ants, route.length, tick)
       }
       poke = fadePokes(poke)
+      if (dance > 0) dance--
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         // (a settled fold's frame stays put: `peak` already says how far the tree folded)
@@ -630,6 +645,17 @@ export const register: Register = (on, options) => {
     } else {
       lastClickAt = at
       poke = addPoke(poke, y, x, motion === 'quiet' ? QUIET_POKE_TICKS : POKE_TICKS)
+      // Enough pokes in a minute, and long enough since the last time: the colony dances.
+      // Quiet mode keeps the toast but skips the dance itself (it's all motion).
+      if (at !== undefined) {
+        const tally = tallyClick(moundClicks, at, lastDanceAt)
+        moundClicks = tally.clicks
+        if (tally.dance) {
+          lastDanceAt = at
+          if (motion !== 'quiet') dance = DANCE_TICKS
+          $.ui.toast(`The ants are dancing! (${DANCE_CLICKS} pokes in a minute)`)
+        }
+      }
       await publish($)
     }
     return {}
@@ -662,6 +688,7 @@ export const register: Register = (on, options) => {
         contextPercent: await read($, contextPercentAtom),
         quiet: motion === 'quiet' || motion === 'off',
         poke: await read($, pokeAtom),
+        dance: (await read($, danceAtom)) > 0,
         ...(main && main.at >= 0 ? { mainRow: main.at } : {}),
       },
     }
@@ -711,6 +738,7 @@ export const register: Register = (on, options) => {
       contextPercent: cp,
       quiet: motion === 'quiet',
       poke: await read($, pokeAtom),
+      dance: (await read($, danceAtom)) > 0,
     })
     // the legend's first line (plus the context readout), leaving the button room at the row's end
     const legendRow: Line =

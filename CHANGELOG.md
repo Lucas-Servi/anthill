@@ -2,6 +2,14 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.9.0]
+
+- Poke the mound more than 10 times within a minute and the colony
+  celebrates: the ants resting in the hole come out and dance on top of the
+  mound (legs kicking, swaying side to side) in a shower of confetti, under
+  a "the colony dances!" header, for about 5 seconds, with a toast. At most
+  once every 10 minutes. In quiet mode only the toast shows.
+
 ## [0.8.1]
 
 - Clicks now have a 3-second cooldown: once a click on an ant or the mound

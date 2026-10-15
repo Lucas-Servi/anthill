@@ -235,6 +235,8 @@ export type Opts = {
   quiet?: boolean
   /** Mound cells poked recently, each still flinching; defaults to none. */
   poke?: Poke[]
+  /** Whether the colony is dancing (it was poked a lot): confetti, and the hole's ants out on top; defaults to false. */
+  dance?: boolean
 }
 
 /**
@@ -314,9 +316,26 @@ const moundLines = (
   refactor?: Refactor,
   quiet?: boolean,
   poke: Poke[] = [],
+  dance = false,
 ): Line[] => {
   const cells = moundCells(tick, shape, stage)
   const route = stageOf(shape, stage).tunnel
+  // The picture's own width at this stage: what the dance keeps within, so the strip's
+  // tree column (measured from this same art) never drifts while the colony dances.
+  const artWidth = Math.max(0, ...stageOf(shape, stage).mound.map(l => Array.from(l).length))
+
+  // Dancing: the sparkle line above the summit turns to confetti, the whole mound wide,
+  // twinkling with `tick` (the dancers are drawn over it, last of all, below).
+  const floor = cells[shape.sparkleLine]
+  if (dance && floor) {
+    while (floor.length < artWidth) floor.push({ ch: ' ' })
+    for (let col = 0; col < artWidth; col++) {
+      floor[col] =
+        (col + tick) % 3 === 0
+          ? { ch: ' ' }
+          : { ch: CONFETTI[(col * 7 + tick) % CONFETTI.length]!, color: CONFETTI_COLORS[(col + tick) % CONFETTI_COLORS.length]! }
+    }
+  }
 
   // The ground first: cells some busy ant has already dug through (a cell past the drawn
   // stage's route, dug while the mound was bigger, isn't shown), then the busy ants' dots
@@ -388,6 +407,7 @@ const moundLines = (
 
   let inMouth = false
   for (const a of seatPeeks(ants)) {
+    if (dance) break // the hole's ants are out on top, dancing (below)
     const at = a.peek === undefined ? undefined : shape.peeks[a.peek]
     const row = at && cells[at.line]
     if (!at || !row) continue
@@ -454,6 +474,30 @@ const moundLines = (
     }
   })
 
+  // The dancers: every ant that was resting in the hole, out on the summit side by side
+  // (as many as fit the mound's width), kicking their legs in turn and swaying left and
+  // right together. Each keeps its own color, so a click on one still finds it (hitAt).
+  if (dance && floor) {
+    const fit: { a: Ant; glyph: string }[] = []
+    let total = -1 // a cell between each two dancers, none before the first
+    ants.filter(inHole).forEach((a, i) => {
+      const glyph = antGlyph(a.breed, 'walking', tick + i)
+      const width = Array.from(glyph).length
+      if (total + 1 + width > artWidth) return
+      fit.push({ a, glyph })
+      total += 1 + width
+    })
+    if (fit.length > 0) {
+      const centre = Math.floor((shape.hole.start + shape.hole.end) / 2)
+      const sway = DANCE_SWAY[Math.floor(tick / 2) % DANCE_SWAY.length]!
+      let col = Math.max(0, Math.min(artWidth - total, centre - Math.floor(total / 2) + sway))
+      for (const { a, glyph } of fit) {
+        paint(floor, col, glyph, a.color, true)
+        col += Array.from(glyph).length + 1
+      }
+    }
+  }
+
   return cells.map(toLine)
 }
 
@@ -463,6 +507,15 @@ const BUSY_DOT = '•'
 /** A poked cell's brief impact mark, and its bright, unmistakably-temporary color. */
 const POKE_CHAR = '✱'
 const POKE_COLOR = '#fff2a8'
+
+/**
+ * A dance's confetti, and its colors: pastels none of the ants' own (PALETTE) or the mishaps'
+ * colors share, so hitAt never mistakes a scrap of confetti for an ant.
+ */
+const CONFETTI = ['*', '+', '·', '✦', '•'] as const
+const CONFETTI_COLORS = ['#ffd1dc', '#c1f0c1', '#fff4b3', '#c9d7ff', '#f2c6ff', '#b8f2f2'] as const
+/** How far the dancers sway from centre, a step every two ticks: right, back, left, back. */
+const DANCE_SWAY = [0, 1, 0, -1] as const
 
 /** A mound cell the refactoring ants have packed tight. */
 const PACKED_CHAR = '▒'
@@ -797,9 +850,14 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const mainColor = ants.find(a => a.id === mainFold?.id)?.color ?? MOUND_PALETTE.t!
   const refactor = mainFold ? refactorOf({ ...mainFold, grown: clamp(mainFold.grown ?? live) }, live, mainColor) : undefined
   const stage = refactor?.stage ?? live
-  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor, opts.quiet, opts.poke ?? [])
+  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor, opts.quiet, opts.poke ?? [], opts.dance)
   const indent = ' '.repeat(TREE_INDENT)
-  const foldBlock: Line[] = folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))
+  // A dance gets a header of its own, in the fold block's slot (so it costs a row the way a
+  // fold's header does), in a confetti color that changes as it goes.
+  const danceHeader: Line[] = opts.dance
+    ? [[{ text: `${indent}✦ the colony dances! ✦`, color: CONFETTI_COLORS[opts.tick % CONFETTI_COLORS.length]!, bold: true }]]
+    : []
+  const foldBlock: Line[] = [...danceHeader, ...folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))]
 
   // -- legend block --
   const legend =
