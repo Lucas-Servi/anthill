@@ -1,9 +1,9 @@
 {
   "name": "anthill",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "An ASCII ant colony crawls your file tree: one ant per agent, working on the files they touch",
   "types": "./types/index.d.ts",
-  "author": { "name": "Lucas-Servi" },
+  "author": { "name": "Lucas Servi" },
   "license": "MIT",
   "homepage": "https://github.com/Lucas-Servi/anthill",
   "repository": "https://github.com/Lucas-Servi/anthill",
