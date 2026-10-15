@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { Ant, Dug, Fold, Job, Layout, Mishap, Row } from '../types'
+import type { Ant, Dug, Fold, Job, Layout, Mishap, Motion, Row } from '../types'
 import {
   HOME,
   MISHAP_TICKS,
+  QUIET_MISHAP_TICKS,
   assign,
   breedOf,
   clearBusy,
@@ -23,7 +24,16 @@ import {
   step,
 } from './ants'
 import { GROWTH_STAGES, SHAPES, stageFor, stageOf } from './mound'
-import { SETTLE_TICKS, compactMs, compose, learnRate, legendLines, type Line } from './render'
+import {
+  QUIET_MAX_ETA_TICKS,
+  QUIET_SETTLE_TICKS,
+  SETTLE_TICKS,
+  compactMs,
+  compose,
+  learnRate,
+  legendLines,
+  type Line,
+} from './render'
 import { ancestors, childRows, indexOf, insertRow, openDir, relativize } from './tree'
 
 const PANE = 'anthill'
@@ -45,6 +55,8 @@ const foldsAtom = atom({ plugin: 'anthill', key: 'folds' } as const, [] as Fold[
 const layoutAtom = atom({ plugin: 'anthill', key: 'layout' } as const, 'side' as Layout)
 const growthAtom = atom({ plugin: 'anthill', key: 'growth' } as const, 0)
 const dugAtom = atom({ plugin: 'anthill', key: 'dug' } as const, [] as Dug[])
+const motionAtom = atom({ plugin: 'anthill', key: 'motion' } as const, 'full' as Motion)
+const contextPercentAtom = atom({ plugin: 'anthill', key: 'contextPercent' } as const, 0)
 
 // The module's own copy of the world; hooks change it synchronously so
 // interleaved events never race, then publish() hands it to the drawing.
@@ -55,8 +67,12 @@ let folds: Fold[] = []
 let cwd = ''
 let spawned = 0
 let layout: Layout = 'side'
+/** The kill switch/reduced-motion mode: the usual colony, a calmer one, or none at all. */
+let motion: Motion = 'full'
 /** How full the mound is drawn: a growth stage, 0..GROWTH_STAGES - 1. */
 let growth = 0
+/** How full the context window is against the auto-compact threshold, as a round percent; 0 until measured. */
+let contextPercent = 0
 /** Tunnel cells some busy ant's dot has already dug through. */
 let dug: Dug[] = []
 /** Context tokens at which the mound reaches its last stage; read once at session.start. */
@@ -76,6 +92,7 @@ const publish = async ($: EngineInterface) => {
   await update($, foldsAtom, () => folds)
   await update($, growthAtom, () => growth)
   await update($, dugAtom, () => dug)
+  await update($, contextPercentAtom, () => contextPercent)
   // Two live reports of a frozen pane during a /compact and a working subagent turned
   // out to be an install running a stale build, not a redraw bug — so this isn't
   // confirmed necessary. It's kept anyway: $.ui.invalidate is the one documented way to
@@ -85,12 +102,29 @@ const publish = async ($: EngineInterface) => {
 }
 
 /** Flips the layout, in state, in $.store (so it outlives the session) and on screen. */
-const setLayout = ($: EngineInterface, next: Layout) => {
+const setLayout = async ($: EngineInterface, next: Layout) => {
   layout = next
-  void update($, layoutAtom, () => layout)
-  void $.store.set('layout', layout)
+  await update($, layoutAtom, () => layout)
+  await $.store.set('layout', layout)
   $.ui.invalidate('ui.render')
 }
+
+/** `raw[key]` if it's one of `allowed`, else `fallback`. */
+function pickOption<T extends string>(raw: PluginOptions, key: string, allowed: readonly T[], fallback: T): T {
+  const value = raw[key]
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
+}
+
+/** Flips the kill-switch/quiet mode, in state, in $.store (so it outlives the session) and on screen. */
+const setMotion = async ($: EngineInterface, next: Motion) => {
+  motion = next
+  await update($, motionAtom, () => motion)
+  await $.store.set('motion', motion)
+  $.ui.invalidate('ui.render')
+}
+
+/** A fresh mishap's duration: full, or QUIET_MISHAP_TICKS while motion is 'quiet'. */
+const mishapTicks = () => (motion === 'quiet' ? QUIET_MISHAP_TICKS : MISHAP_TICKS)
 
 const antFor = (id: string, label = 'agent', model?: string): Ant => {
   let ant = ants.find(a => a.id === id)
@@ -223,9 +257,12 @@ const now = async ($: EngineInterface): Promise<number | undefined> => {
 const resetGrowth = () => {
   growth = 0
   dug = []
+  contextPercent = 0
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const motionDefault = pickOption(options, 'motion', ['full', 'quiet', 'off'] as const, 'full')
+
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
     cwd = e.cwd.replace(/\/+$/, '')
@@ -248,11 +285,14 @@ export const register: Register = on => {
       typeof d === 'number' ? [{ i: d, at: tick }] : d && typeof d === 'object' ? [d as Dug] : [],
     )
     growth = await read($, growthAtom)
+    contextPercent = await read($, contextPercentAtom)
     // $.store, not just $.state, since this is the one thing meant to outlive the
     // session itself (a /clear, a brand-new session): fall back to the atom (an older
     // save, or a session that hasn't gone through $.store yet), then 'side'.
     const stored = await $.store.get('layout')
     layout = stored === 'strip' || stored === 'side' ? stored : (await read($, layoutAtom)) ?? 'side'
+    const storedMotion = await $.store.get('motion')
+    motion = storedMotion === 'full' || storedMotion === 'quiet' || storedMotion === 'off' ? storedMotion : motionDefault
     const rate = await $.store.get(COMPACT_RATE_KEY)
     compactRate = typeof rate === 'number' && rate > 0 ? rate : undefined
     spawned = Math.max(0, ants.length - 1)
@@ -271,31 +311,37 @@ export const register: Register = on => {
       growthThreshold = usage.context.breakdown?.autoCompactThreshold ?? usage.context.window
       const fill = usage.context.tokens === undefined ? undefined : usage.context.tokens / growthThreshold
       growth = stageFor(fill, GROWTH_STAGES)
+      contextPercent = fill === undefined || !(fill >= 0) ? 0 : Math.round(fill * 100)
     } catch {
-      // Leave growth as whatever state had: the mound just won't grow further this session.
+      // Leave growth and contextPercent as whatever state had: the mound just won't grow further this session.
     }
 
     await publish($)
 
     await $.command.register({
       name: 'anthill',
-      description: 'Show the ant colony: "strip" moves it above the prompt, "side" (or nothing) back to the pane',
+      description:
+        'Show the ant colony: "strip" moves it above the prompt, "side" (or nothing) back to the pane; '
+        + '"quiet" calms the animation, "off" turns it off (either until "full" turns it back on)',
     })
-    if (e.isInteractive && layout === 'side') void $.ui.open({ id: PANE, title: 'Anthill' })
+    if (e.isInteractive && layout === 'side' && motion !== 'off') void $.ui.open({ id: PANE, title: 'Anthill' })
 
     let idleTicks = 0
     $.clock.every(TICK_MS, () => {
+      // The kill switch: nothing animates, nothing ticks, nothing to redraw. Cheap too —
+      // every firing is this one check instead of a full step()/publish() pass.
+      if (motion === 'off') return
       const busy =
         ants.some(a => a.task !== 'home' || a.leaving || a.mishap) ||
         rows.some(r => r.built !== undefined || r.flash) ||
         folds.length > 0
       if (!busy) {
         // Nothing to crawl to: the ants resting in the hole still look busy down
-        // there, with a slow antennae wiggle. The simulation tick itself (and
-        // anything that depends on it, like the mound's sparkle) stays put, so an
-        // idle session doesn't keep ticking it.
+        // there, with a slow antennae wiggle (dropped in quiet mode). The simulation
+        // tick itself (and anything that depends on it, like the mound's sparkle)
+        // stays put, so an idle session doesn't keep ticking it.
         idleTicks++
-        if (idleTicks % IDLE_WIGGLE_EVERY === 0 && ants.some(a => a.task === 'home')) {
+        if (idleTicks % IDLE_WIGGLE_EVERY === 0 && motion !== 'quiet' && ants.some(a => a.task === 'home')) {
           ants = ants.map(a => (a.task === 'home' ? { ...a, frame: a.frame + 1 } : a))
           void update($, antsAtom, () => ants)
           $.ui.invalidate('ui.render')
@@ -313,8 +359,11 @@ export const register: Register = on => {
       tick++
       ;({ ants, rows } = step(ants, rows))
       // dig along the route of the mound as it's drawn now: a grown one's runs into its hump
-      const route = stageOf(SHAPES[layout === 'strip' ? 'horizontal' : 'vertical'], growth).tunnel
-      dug = dig(dug, ants, route.length, tick)
+      // (skipped in quiet mode: the busy dot itself still moves, just without the decoration)
+      if (motion !== 'quiet') {
+        const route = stageOf(SHAPES[layout === 'strip' ? 'horizontal' : 'vertical'], growth).tunnel
+        dug = dig(dug, ants, route.length, tick)
+      }
       folds = folds
         .map(f => (f.settle !== undefined ? { ...f, settle: f.settle - 1 } : { ...f, frame: f.frame + 1 }))
         // (a settled fold's frame stays put: `peak` already says how far the tree folded)
@@ -331,14 +380,20 @@ export const register: Register = on => {
 
   on('command.run', { command: 'anthill' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
+    const offNotice = 'The anthill is off. "/anthill full" (or "quiet") turns it back on.'
+    if (arg === 'quiet' || arg === 'full' || arg === 'off') {
+      await setMotion($, arg)
+      if (arg === 'off') await $.ui.close({ id: PANE })
+      return { text: arg === 'off' ? offNotice : `The anthill's animation is now ${arg}.` }
+    }
     if (arg === 'strip') {
-      setLayout($, 'strip')
+      await setLayout($, 'strip')
       await $.ui.close({ id: PANE })
       return { text: 'The anthill moved to the strip above the prompt.' }
     }
-    setLayout($, 'side')
-    await $.ui.open({ id: PANE, title: 'Anthill' })
-    return { text: 'The anthill is open.' }
+    await setLayout($, 'side')
+    if (motion !== 'off') await $.ui.open({ id: PANE, title: 'Anthill' })
+    return { text: motion === 'off' ? offNotice : 'The anthill is open.' }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -371,11 +426,11 @@ export const register: Register = on => {
     let mishap: Mishap | undefined
     try {
       const result = await next(e)
-      if (result.deny !== undefined) mishap = { kind: 'denied', ticks: MISHAP_TICKS }
-      else if (result.isError) mishap = { kind: 'error', ticks: MISHAP_TICKS }
+      if (result.deny !== undefined) mishap = { kind: 'denied', ticks: mishapTicks() }
+      else if (result.isError) mishap = { kind: 'error', ticks: mishapTicks() }
       return result
     } catch (err) {
-      mishap = { kind: 'error', ticks: MISHAP_TICKS }
+      mishap = { kind: 'error', ticks: mishapTicks() }
       throw err
     } finally {
       const cur = ants.find(a => a.id === id)
@@ -445,14 +500,26 @@ export const register: Register = on => {
     // long as folding this much context should take; a subagent's only shows its header
     const tokens = e.agentId ? 0 : await contextTokens($, e.messages)
     const startedAt = e.agentId ? undefined : await now($)
-    const paced = { isMain: true as const, eta: Math.max(1, Math.round(compactMs(tokens, compactRate) / TICK_MS)), grown: growth }
+    const paced = {
+      isMain: true as const,
+      eta: Math.max(
+        1,
+        Math.min(
+          motion === 'quiet' ? QUIET_MAX_ETA_TICKS : Infinity,
+          Math.round(compactMs(tokens, compactRate) / TICK_MS),
+        ),
+      ),
+      grown: growth,
+    }
     folds = [...folds, { id, label: ant.label, before: e.messages.length, frame: 0, ...(e.agentId ? {} : paced) }]
     await publish($)
     try {
       const result = await next(e)
       const before = folds.find(f => f.id === id)?.before ?? e.messages.length
       const after = result.skip !== undefined ? before : result.messages.length
-      folds = folds.map(f => (f.id === id ? { ...f, after, settle: SETTLE_TICKS, peak: f.frame } : f))
+      folds = folds.map(f =>
+        f.id === id ? { ...f, after, settle: motion === 'quiet' ? QUIET_SETTLE_TICKS : SETTLE_TICKS, peak: f.frame } : f,
+      )
       // A resolved compaction of main's own conversation (not skipped) shrinks it back down:
       // the mound and its dug tunnels go back to their own starting shape too. A subagent's
       // own compaction never touches the mound at all.
@@ -495,6 +562,7 @@ export const register: Register = on => {
     if (e.changed.includes('context')) {
       const fill = e.context.tokens === undefined ? undefined : e.context.tokens / growthThreshold
       growth = stageFor(fill, GROWTH_STAGES)
+      contextPercent = fill === undefined || !(fill >= 0) ? 0 : Math.round(fill * 100)
       await publish($)
     }
     return ran
@@ -513,6 +581,8 @@ export const register: Register = on => {
       mainRow: main && main.at >= 0 ? main.at : undefined,
       growth: await read($, growthAtom),
       dug: await read($, dugAtom),
+      contextPercent: await read($, contextPercentAtom),
+      quiet: motion === 'quiet' || motion === 'off',
     })
 
     return (
@@ -534,7 +604,7 @@ export const register: Register = on => {
             hotkey="h"
             label="▬ strip"
             onPress={() => {
-              setLayout($, 'strip')
+              void setLayout($, 'strip')
               void $.ui.close({ id: PANE })
             }}
           />
@@ -548,13 +618,14 @@ export const register: Register = on => {
   // shared, unlike Pane — it hides itself (by answering next(e), the engine's own empty
   // draw) whenever the layout isn't "strip", or a survey is using the band instead.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || layout !== 'strip') return next(e)
+    if (e.props.hasSurvey || layout !== 'strip' || motion === 'off') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const readAnts = await read($, antsAtom)
     const main = readAnts.find(a => a.id === MAIN)
     const width = Math.max(10, e.props.bodyColumns || 40)
     const height = Math.max(3, Math.min(e.props.maxRows, STRIP_MAX_ROWS) - 1) // one row held for the button
     const tickNow = await read($, tickAtom)
+    const cp = await read($, contextPercentAtom)
     const lines = compose(await read($, rowsAtom), readAnts, await read($, foldsAtom), {
       width,
       height,
@@ -564,9 +635,12 @@ export const register: Register = on => {
       growth: await read($, growthAtom),
       dug: await read($, dugAtom),
       legend: false, // drawn beside the button below instead, so it never costs the strip a row
+      contextPercent: cp,
+      quiet: motion === 'quiet',
     })
-    // the legend's first line, leaving the button room at the row's end
-    const legendRow: Line = legendLines(readAnts, Math.max(10, width - 12), tickNow)[0] ?? []
+    // the legend's first line (plus the context readout), leaving the button room at the row's end
+    const legendRow: Line =
+      legendLines(readAnts, Math.max(10, width - 12), tickNow, cp ? `${cp}% to compact` : undefined)[0] ?? []
 
     return (
       <Box flexDirection="column">
@@ -594,7 +668,7 @@ export const register: Register = on => {
             hotkey="s"
             label="▮ side"
             onPress={() => {
-              setLayout($, 'side')
+              void setLayout($, 'side')
               void $.ui.open({ id: PANE, title: 'Anthill' })
             }}
           />

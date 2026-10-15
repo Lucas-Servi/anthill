@@ -1,7 +1,7 @@
 import type { AgentInfo } from 'claude-code'
 import type { Ant, Breed, Dug, Job, Row } from '../types'
 import { HOME, PEEKS, SUMMIT, TUNNEL_SEATS } from './mound'
-import { BUILD_STEPS, indexOf, isBuilt } from './tree'
+import { BUILD_STEPS, isBuilt } from './tree'
 
 export { HOME, TRAIL_STEPS } from './mound'
 
@@ -14,6 +14,9 @@ const WORK_BURST = 6
  * the pane could catch it; this is long enough to notice, short enough not to linger.
  */
 export const MISHAP_TICKS = 40
+
+/** A mishap/flash's duration in quiet mode: still noticeable, far shorter than MISHAP_TICKS. */
+export const QUIET_MISHAP_TICKS = 8
 
 /**
  * A walking ant leaves the hole only when no other ant is on the first GATE
@@ -41,6 +44,10 @@ export const PALETTE: string[] = [
   '#5fffff', // cyan
   '#ff8700', // orange
   '#ff87af', // pink
+  '#af5fff', // violet
+  '#5fffaf', // mint
+  '#d7875f', // tan
+  '#87d7ff', // sky
 ]
 
 export function colorFor(index: number): string {
@@ -197,11 +204,13 @@ function climbInto(ant: Ant, fromDepth: number, toDepth: number): Ant {
   return fromDepth < toDepth ? { ...ant, climbDepth: fromDepth } : clearClimb(ant)
 }
 
-/** Pulls the next queued job into `job`, or heads the ant home. */
+/** Pulls the next queued job into `job`, or heads the ant home; drops any doneIds no longer live. */
 function advanceToNext(ant: Ant): Ant {
   const [next, ...rest] = ant.queue
-  if (next) return { ...ant, job: next, queue: rest, task: 'walking' }
-  return { ...ant, job: undefined, task: 'returning' }
+  const live = new Set(next ? [next.id, ...rest.map((j) => j.id)] : [])
+  const doneIds = ant.doneIds.filter((id) => live.has(id))
+  if (next) return { ...ant, job: next, queue: rest, doneIds, task: 'walking' }
+  return { ...ant, job: undefined, queue: rest, doneIds, task: 'returning' }
 }
 
 /** Remembers that a job's tool call is over, so the ant moves on as soon as it is done there. */
@@ -361,6 +370,10 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
   const ants = seatOrbits(seatPeeks(given))
   // a row's flash fades the same way, one tick at a time, regardless of what else happens to it below
   let nextRows = rows.some((r) => r.flash) ? rows.map(fadeFlash) : rows
+  // Built once per tick (O(rows)), not once per walking/building ant (O(ants x rows) that way):
+  // setBuilt/clearBuilt below only replace a row at a fixed index with a same-path copy, so
+  // paths/order never move mid-loop and this stays valid for every ant's lookup this tick.
+  const rowIndex = new Map(nextRows.map((r, i) => [r.path, i] as const))
   const nextAnts: Ant[] = []
   /** Where each of nextAnts stood before this tick. */
   const from: number[] = []
@@ -399,7 +412,7 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
         keep({ ...ant, task: 'returning' })
         continue
       }
-      const target = indexOf(nextRows, ant.job.path)
+      const target = rowIndex.get(ant.job.path) ?? -1
       if (target === -1) {
         keep({ ...ant, task: 'returning', job: undefined })
         continue
@@ -441,7 +454,7 @@ export function step(given: Ant[], rows: Row[]): { ants: Ant[]; rows: Row[] } {
         keep({ ...ant, task: 'returning' })
         continue
       }
-      const target = indexOf(nextRows, ant.job.path)
+      const target = rowIndex.get(ant.job.path) ?? -1
       if (target === -1) {
         keep({ ...ant, task: 'returning', job: undefined })
         continue

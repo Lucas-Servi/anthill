@@ -1,6 +1,20 @@
 {
   "name": "anthill",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "An ASCII ant colony crawls your file tree: one ant per agent, working on the files they touch",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "author": { "name": "Lucas-Servi" },
+  "license": "MIT",
+  "homepage": "https://github.com/Lucas-Servi/anthill",
+  "repository": "https://github.com/Lucas-Servi/anthill",
+  "keywords": ["ascii", "visualization", "ants", "file-tree", "animation"],
+  "userConfig": {
+    "motion": {
+      "type": "string",
+      "title": "Animation",
+      "description": "full is the usual colony; quiet shortens flashes/blinking and drops the idle wiggle and tunnel decoration; off freezes it and keeps the pane/strip closed until \"/anthill full\" (or \"quiet\") turns it back on.",
+      "default": "full",
+      "options": ["full", "quiet", "off"]
+    }
+  }
 }

@@ -4,6 +4,10 @@ A Claude Code plugin that docks an ASCII ant colony beside your session.
 Your project's file tree grows out of the anthill, and every agent is an ant
 crawling its branches:
 
+<!-- TODO: a screenshot or short recording of the pane here. `scripts/demo.ts`
+     (see Develop, below) prints a representative scene to the terminal to
+     capture one from. -->
+
 - **Read / Edit / Grep / Glob**: the ant walks to that file or directory and works on it.
 - **Write to a new file**: the ant walks there and builds the new branch, piece by piece.
 - Ants climb out of the hole on top of the anthill and crawl down its side onto the tree. When the tool call finishes, the ant climbs back up and into the hole, where its antennae peek out until its next job. A subagent's ant leaves the colony when its work is done — and also when the subagent itself stopped, failed or was killed, even with no final turn to say so.
@@ -51,6 +55,22 @@ switches it back. Both are reachable from the keyboard too (`ctrl+x tab`, then
 the button's hotkey), and `/anthill strip` / `/anthill side` do the same thing
 without touching the mouse.
 
+## Configure
+
+The plugin's one setting, under `/config`, is **Animation**:
+
+- **full** (the default): the usual colony.
+- **quiet**: shortens mishap flashes and stops the color-blink, drops the idle
+  antennae wiggle, and stops the busy dots decorating the mound as they dig —
+  the ants still walk, work and dig, just without the extra flourish.
+- **off**: a full kill switch. Nothing animates, the pane and strip stay
+  closed, and the simulation itself stops ticking.
+
+`/anthill quiet`, `/anthill full` and `/anthill off` switch it right away —
+and that choice is saved too (the same way the strip/side layout choice is),
+so it's what the next session starts in, taking priority over `/config`'s
+own setting from then on.
+
 ## Develop
 
 ```
@@ -73,3 +93,14 @@ short-and-wide layout. The state contract lives in `types/index.d.ts`.
 
 Bumping `plugin.json`'s `version` is how an installed copy actually picks up
 a change — `claude plugin update` compares versions, not commits.
+
+A small scratch script, `scripts/demo.ts`, renders a representative scene
+(ants walking and building, a busy dot digging, a mishap flashing, a
+`/compact` refactor mid-animation) straight to a real ANSI terminal, using
+only `hooks/render.ts`/`hooks/mound.ts`'s own pure functions — handy for
+checking a change by eye, or for capturing the screenshot above. Run it with
+`npx -y esbuild scripts/demo.ts --bundle --outfile=/tmp/anthill-demo.js --format=esm --platform=node && node /tmp/anthill-demo.js`.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

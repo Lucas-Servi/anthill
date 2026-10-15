@@ -101,7 +101,9 @@ const session = async (
     ants?: { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[]
     folds?: { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[]
     layout?: 'side' | 'strip'
+    motion?: 'full' | 'quiet' | 'off'
     growth?: number
+    contextPercent?: number
     dug?: unknown[]
     tick?: number
   }[] = [],
@@ -116,7 +118,9 @@ const session = async (
     ants: [] as { id: string; at: number; task: string; mishap?: { kind: 'error' | 'denied'; ticks: number } }[],
     folds: [] as { id: string; before: number; after?: number; settle?: number; isMain?: true; peak?: number }[],
     layout: 'side' as 'side' | 'strip',
+    motion: 'full' as 'full' | 'quiet' | 'off',
     growth: 0,
+    contextPercent: 0,
     dug: [] as { i: number; at: number }[],
     tick: 0,
     ticks: 0,
@@ -136,7 +140,9 @@ const session = async (
     if (set.key === 'ants') latest.ants = set.value as typeof latest.ants
     if (set.key === 'folds') latest.folds = set.value as typeof latest.folds
     if (set.key === 'layout') latest.layout = set.value as typeof latest.layout
+    if (set.key === 'motion') latest.motion = set.value as typeof latest.motion
     if (set.key === 'growth') latest.growth = set.value as number
+    if (set.key === 'contextPercent') latest.contextPercent = set.value as number
     if (set.key === 'dug') latest.dug = set.value as typeof latest.dug
     if (set.key === 'tick') {
       latest.tick = set.value as number
@@ -222,6 +228,18 @@ test('resting ants wiggle their antennae while idle, without advancing the simul
   expect(frameOf()).toBeGreaterThan(before) // but the ant resting in the hole still looks busy
   expect(await pane.find({ text: 'README.md' })).toBeDefined()
 })
+
+test(
+  'a fresh install (no $.store entry, no saved atom) picks up the userConfig default for the animation',
+  { options: { motion: 'quiet' } },
+  async ($, on) => {
+    const { latest, idles } = await session($, on, DIRS, [])
+    const frameOf = () => (latest.ants[0] as unknown as { frame: number }).frame
+    const before = frameOf()
+    expect(await idles(120 * 20)).toBe(true)
+    expect(frameOf()).toBe(before) // quiet mode drops the idle wiggle too: motion really came from userConfig
+  },
+)
 
 test('a Bash call shows the ant busy, not idle, for its duration, and home again once its turn completes', async ($, on) => {
   on('turn.complete', () => ({ text: '' }) as never)
@@ -561,6 +579,48 @@ test('/anthill strip switches the layout to strip; /anthill with no args switche
   expect(r2.text?.toLowerCase()).toContain('open')
 })
 
+test('/anthill quiet|full|off switch the animation mode and round-trip through $.store', async ($, on) => {
+  on('command.run', () => ({ text: 'ok' }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.close', () => ({ value: undefined }) as never)
+  const store: Record<string, unknown> = {}
+  const { latest } = await session($, on, DIRS, [], [], undefined, store)
+
+  const r1 = await $.command.run(anthillCommand('quiet') as never)
+  expect(latest.motion).toBe('quiet')
+  expect(store.motion).toBe('quiet')
+  expect(r1.text?.toLowerCase()).toContain('quiet')
+
+  const r2 = await $.command.run(anthillCommand('off') as never)
+  expect(latest.motion).toBe('off')
+  expect(store.motion).toBe('off')
+  expect(r2.text?.toLowerCase()).toContain('off')
+
+  const r3 = await $.command.run(anthillCommand('full') as never)
+  expect(latest.motion).toBe('full')
+  expect(store.motion).toBe('full')
+  expect(r3.text?.toLowerCase()).toContain('full')
+})
+
+test('/anthill off freezes the colony outright (the tick loop returns before stepping); /anthill full resumes it', async ($, on) => {
+  on('command.run', () => ({ text: 'ok' }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.close', () => ({ value: undefined }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  const { clock, latest } = await session($, on, DIRS, [])
+
+  await $.command.run(anthillCommand('off') as never)
+  const tickBefore = latest.tick
+  await $.tool.call({ tool: 'Bash', command: 'echo hi', tool_use_id: 'b1' } as never) // would normally make the ant busy and ticking
+  await clock.advance(120 * 50)
+  expect(latest.tick).toBe(tickBefore) // frozen: no tick advanced the whole time
+
+  await $.command.run(anthillCommand('full') as never)
+  await clock.advance(120 * 5)
+  expect(latest.tick).toBeGreaterThan(tickBefore) // resumes right where it left off
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+})
+
 test('the strip above the prompt only draws once the layout is "strip", and yields while a survey holds the band', async ($, on) => {
   // our own AbovePrompt hook yields with next(e) whenever it has nothing to draw (not
   // "strip", or a survey holds the band); something has to be the bottom of that chain.
@@ -598,6 +658,7 @@ test('session.measure sets the mound\'s growth stage from the context fill, agai
 
   await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
   expect(latest.growth).toBe(stageFor(400 / 800, GROWTH_STAGES))
+  expect(latest.contextPercent).toBe(50) // 400 / 800, the same fraction the mound's growth uses
 
   // a measurement that didn't move the context fill is ignored
   const before = latest.growth
@@ -614,6 +675,7 @@ test('a resolved main compaction resets the mound\'s growth and dug tunnels; a s
 
   await $.session.measure({ context: { window: 1000, tokens: 400 }, rateLimits: [], changed: ['context'] } as never)
   expect(latest.growth).toBeGreaterThan(0)
+  expect(latest.contextPercent).toBeGreaterThan(0)
   // dig a cell in, so there's something to see reset alongside growth
   await $.tool.call({ tool: 'Bash', command: 'echo hi', tool_use_id: 'b1' } as never)
   await clock.advance(120 * 3)
@@ -636,6 +698,7 @@ test('a resolved main compaction resets the mound\'s growth and dug tunnels; a s
   await $.session.compact({ trigger: 'manual', messages: msgs(4) } as never)
   expect(latest.growth).toBe(0)
   expect(latest.dug).toEqual([])
+  expect(latest.contextPercent).toBe(0)
 })
 
 test('a compaction the engine skipped leaves the mound\'s growth and dug tunnels as they were', async ($, on) => {

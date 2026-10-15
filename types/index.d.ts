@@ -1,6 +1,9 @@
 /** Which ant body an agent gets, from the model it runs on. */
 export type Breed = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'other'
 
+/** The kill switch / reduced-motion mode: the usual colony, a calmer one, or none at all. */
+export type Motion = 'full' | 'quiet' | 'off'
+
 /**
  * A tool call gone wrong: refused (by the permission prompt, a hook, managed settings)
  * or errored (the tool threw, was interrupted, or answered an error; a rejected call
@@ -151,10 +154,14 @@ declare module 'claude-code' {
       folds: Fold[]
       /** Which layout the person last chose; restored to $.store too, so it outlives the session. */
       layout: Layout
+      /** Which animation mode (full/quiet/off) was last chosen; restored to $.store too. */
+      motion: Motion
       /** The mound's growth stage: how full the context window was, last measured. */
       growth: number
       /** Tunnel cells some busy ant has already dug through. */
       dug: Dug[]
+      /** How full the context window is against the auto-compact threshold, 0..100(+); 0 until measured, same as growth. */
+      contextPercent: number
     }
   }
 }

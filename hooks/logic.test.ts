@@ -223,6 +223,10 @@ test('colorFor cycles the palette', () => {
   expect(colorFor(PALETTE.length + 2)).toBe(PALETTE[2])
 })
 
+test('PALETTE stays wide enough for a busy colony before colors repeat', () => {
+  expect(PALETTE.length).toBeGreaterThanOrEqual(10)
+})
+
 test('home is inside the hole, one step before the first trail point', () => {
   expect(TRAIL_STEPS).toBe(TRAIL.length)
   expect(HOME).toBe(-(TRAIL.length + 1))
@@ -266,6 +270,33 @@ test('ant lifecycle: assign, climb out, walk, work, finish, return home', () => 
   ;[ant, rowsNow] = tick(ant, rowsNow)
   expect(ant.at).toBe(HOME)
   expect(ant.task).toBe('home')
+})
+
+test('doneIds is pruned once the job it names is no longer current or queued', () => {
+  const rows: Row[] = [
+    { path: 'a.ts', name: 'a.ts', depth: 0, isDir: false },
+    { path: 'b.ts', name: 'b.ts', depth: 0, isDir: false },
+  ]
+  let ant = newAnt('1', 'main', 'other', '#fff')
+  ant = assign(ant, { id: 'jobA', path: 'a.ts', kind: 'work' })
+  ant = assign(ant, { id: 'jobB', path: 'b.ts', kind: 'work' }) // queued behind jobA, still walking
+
+  // jobA's tool call is over before the ant has even arrived: remembered, not acted on yet
+  ant = finish(ant, 'jobA')
+  expect(ant.doneIds).toEqual(['jobA'])
+
+  // walk out and down to a.ts: still the current job, so doneIds keeps remembering it
+  ;[ant] = climbDown(ant, rows)
+  ;[ant] = runUntil(ant, rows, (a) => a.task !== 'walking', 10)
+  expect(ant.task).toBe('working')
+  expect(ant.job?.id).toBe('jobA')
+  expect(ant.doneIds).toEqual(['jobA'])
+
+  // the work burst runs out with doneIds already holding jobA: advances straight to jobB,
+  // and jobA's id (no longer current, nor queued) is pruned rather than kept forever
+  ;[ant] = runUntil(ant, rows, (a) => a.job?.id !== 'jobA', 20)
+  expect(ant.job?.id).toBe('jobB')
+  expect(ant.doneIds).toEqual([])
 })
 
 test('a full trip to row r and back takes the trail both ways', () => {
@@ -798,6 +829,19 @@ test('seatOrbits seats busy ants on ORBIT like seatPeeks seats home ants on PEEK
   // a newcomer takes the freed seat 0
   ants = seatOrbits([...ants, markBusy(newAnt('d', 'd', 'other', colorFor(3)))])
   expect(ants.find(a => a.id === 'd')!.busySeat).toBe(0)
+})
+
+test('more busy ants than TUNNEL_SEATS: the overflow stays undotted rather than overlapping an occupied seat', () => {
+  const ants = seatOrbits(
+    Array.from({ length: TUNNEL_SEATS + 3 }, (_, i) => markBusy(newAnt('a' + i, 'a' + i, 'other', colorFor(i)))),
+  )
+  const seated = ants.filter(a => a.busySeat !== undefined)
+  const overflow = ants.filter(a => a.busySeat === undefined)
+  expect(seated.length).toBe(TUNNEL_SEATS)
+  expect(overflow.length).toBe(3)
+  expect(new Set(seated.map(a => a.busySeat)).size).toBe(TUNNEL_SEATS) // every held seat distinct
+  // every ant is still simulated as busy — only the seat (and so the mound dot) is missing
+  for (const a of overflow) expect(a.task).toBe('busy')
 })
 
 test('a walking ant moving between rows at the same depth never climbs', () => {

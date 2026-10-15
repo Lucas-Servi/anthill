@@ -195,7 +195,9 @@ export const MISHAP_MARK: Record<'error' | 'denied', string> = { error: 'x', den
  * on the trail, on tree rows and in the hole alike, so the stumble reads as a change
  * to the ant itself rather than a steady recolor.
  */
-const antColor = (a: Ant): string => (a.mishap && a.frame % 2 === 1 ? MISHAP_COLORS[a.mishap.kind] : a.color)
+/** `quiet` drops the blink: a mishap still shows (its own color/mark elsewhere), just doesn't flicker. */
+const antColor = (a: Ant, quiet?: boolean): string =>
+  a.mishap && !quiet && a.frame % 2 === 1 ? MISHAP_COLORS[a.mishap.kind] : a.color
 
 // ---- work/build effects ---------------------------------------------------
 
@@ -222,6 +224,10 @@ type Opts = {
   dug?: Dug[]
   /** Whether to draw the legend under the picture; defaults to true (the strip draws its own beside its button). */
   legend?: boolean
+  /** The context-% readout appended to the legend; defaults to none. */
+  contextPercent?: number
+  /** Reduced-motion mode: a mishap stops blinking between its own color and the mishap's; defaults to false. */
+  quiet?: boolean
 }
 
 /**
@@ -229,8 +235,9 @@ type Opts = {
  * with a mishap gets a trailing ' x' (error) or ' !' (denied), in the mishap's own
  * color, after its own (unblinking here) label text.
  */
-export const legendLines = (ants: Ant[], width: number, tick: number): Line[] => {
-  const items = ants.map(a => {
+export const legendLines = (ants: Ant[], width: number, tick: number, extra?: string): Line[] => {
+  type Item = { text: string; color?: string; mark: string; markColor?: string }
+  const items: Item[] = ants.map(a => {
     const mark = a.mishap ? ' ' + MISHAP_MARK[a.mishap.kind] : ''
     return {
       text: antGlyph(a.breed, a.task, tick) + ' ' + a.label + ' (' + a.breed + ')' + mark,
@@ -239,6 +246,9 @@ export const legendLines = (ants: Ant[], width: number, tick: number): Line[] =>
       markColor: a.mishap ? MISHAP_COLORS[a.mishap.kind] : undefined,
     }
   })
+  // The context-% readout, appended after every ant's own item: it just wraps along with
+  // them, and (having no color/mark of its own) always takes the dim, unmarked branch below.
+  if (extra) items.push({ text: extra, mark: '' })
   const legend: Line[] = []
   let cur: Line = []
   let curW = 0
@@ -256,8 +266,10 @@ export const legendLines = (ants: Ant[], width: number, tick: number): Line[] =>
     if (item.mark) {
       cur.push({ text: item.text.slice(0, item.text.length - item.mark.length), color: item.color })
       cur.push({ text: item.mark, color: item.markColor })
-    } else {
+    } else if (item.color) {
       cur.push({ text: item.text, color: item.color })
+    } else {
+      cur.push({ text: item.text, dim: true })
     }
     curW += item.text.length
   }
@@ -286,7 +298,15 @@ const clipLine = (line: Line, width: number): Line => {
  * Each ant in the hole peeks from its own seat (seatPeeks), so one ant leaving
  * never makes another's antennae jump.
  */
-const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number, dug: Dug[], refactor?: Refactor): Line[] => {
+const moundLines = (
+  ants: Ant[],
+  tick: number,
+  shape: MoundShape,
+  stage: number,
+  dug: Dug[],
+  refactor?: Refactor,
+  quiet?: boolean,
+): Line[] => {
   const cells = moundCells(tick, shape, stage)
   const route = stageOf(shape, stage).tunnel
 
@@ -356,7 +376,7 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
     const at = a.peek === undefined ? undefined : shape.peeks[a.peek]
     const row = at && cells[at.line]
     if (!at || !row) continue
-    paint(row, at.col, peekGlyph(a.frame), antColor(a), true)
+    paint(row, at.col, peekGlyph(a.frame), antColor(a, quiet), true)
     if (at.line === shape.hole.line) inMouth = true
   }
   // Antennae darken their whole mouth cell (it keeps the hole's ground); the rest of
@@ -413,7 +433,7 @@ const moundLines = (ants: Ant[], tick: number, shape: MoundShape, stage: number,
       const width = Array.from(glyph).length
       if (want < 0) want = glyphStart(point, width)
       const start = freeStart(spans, want, width)
-      paint(row, start, glyph, antColor(a))
+      paint(row, start, glyph, antColor(a, quiet))
       spans.push({ start, end: start + width })
       want = start + width
     }
@@ -551,6 +571,10 @@ const TREE_SHARE = 0.9
 export const SETTLE_TICKS = 40
 const SETTLE_FINISH = 6
 const SETTLE_HOLD = 14
+/** How long a resolved compaction's "memory folded" header shows in quiet mode, instead of SETTLE_TICKS. */
+export const QUIET_SETTLE_TICKS = 10
+/** The longest a quiet-mode refactoring animation is ever paced to, instead of compactMs's real estimate. */
+export const QUIET_MAX_ETA_TICKS = 15
 
 /**
  * How main's compaction refactors the anthill at this moment. `live` is the growth stage
@@ -754,12 +778,15 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
   const mainColor = ants.find(a => a.id === mainFold?.id)?.color ?? MOUND_PALETTE.t!
   const refactor = mainFold ? refactorOf({ ...mainFold, grown: clamp(mainFold.grown ?? live) }, live, mainColor) : undefined
   const stage = refactor?.stage ?? live
-  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor)
+  const mound = moundLines(ants, opts.tick, shape, stage, opts.dug ?? [], refactor, opts.quiet)
   const indent = ' '.repeat(TREE_INDENT)
   const foldBlock: Line[] = folds.map(f => foldHeader(f, indent, ants.find(a => a.id === f.id)?.color))
 
   // -- legend block --
-  const legend = opts.legend === false ? [] : legendLines(ants, width, opts.tick)
+  const legend =
+    opts.legend === false
+      ? []
+      : legendLines(ants, width, opts.tick, opts.contextPercent ? `${opts.contextPercent}% to compact` : undefined)
 
   // -- tree rows --
   const prefixSteps = branchPrefixSteps(rows)
@@ -791,12 +818,12 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
     const overlays = climbing.map(a => ({
       col: indent.length + steps.slice(0, a.climbDepth!).join('').length,
       glyph: antGlyph(a.breed, a.task, a.frame) + mishapMark(a),
-      color: antColor(a),
+      color: antColor(a, opts.quiet),
     }))
 
     const line: Line = overlays.length > 0 ? overlayLine(baseText, overlays) : [{ text: baseText, dim: true }]
     for (const a of walking) {
-      line.push({ text: antGlyph(a.breed, a.task, a.frame) + mishapMark(a) + ' ', color: antColor(a) })
+      line.push({ text: antGlyph(a.breed, a.task, a.frame) + mishapMark(a) + ' ', color: antColor(a, opts.quiet) })
     }
 
     if (isBuilt(row)) {
@@ -807,16 +834,16 @@ export const compose = (rows: Row[], ants: Ant[], folds: Fold[], opts: Opts): Li
         const highlighted = standingAnts[0]
         line.push(
           highlighted
-            ? { text: name, color: antColor(highlighted), bold: true }
+            ? { text: name, color: antColor(highlighted, opts.quiet), bold: true }
             : { text: name, bold: row.isDir },
         )
       }
     }
 
     for (const a of standingAnts) {
-      line.push({ text: ' ' + antGlyph(a.breed, a.task, a.frame) + mishapMark(a), color: antColor(a) })
+      line.push({ text: ' ' + antGlyph(a.breed, a.task, a.frame) + mishapMark(a), color: antColor(a, opts.quiet) })
       const fx = workFx(a.task, a.frame)
-      if (fx) line.push({ text: fx, color: antColor(a), dim: true })
+      if (fx) line.push({ text: fx, color: antColor(a, opts.quiet), dim: true })
     }
 
     return line

@@ -139,7 +139,7 @@ export const TUNNEL: { line: number; col: number }[] = [
 ]
 
 /** How many busy ants can dig at once, evenly spaced so their dots never coincide. */
-export const TUNNEL_SEATS = 6
+export const TUNNEL_SEATS = 9
 
 /** The trail point index for an `Ant.at`, or undefined when the ant is in the hole or on the tree. */
 export const trailIndex = (at: number): number | undefined =>

@@ -1,7 +1,8 @@
 {
   "name": "anthill",
-  "owner": { "name": "lucas-elytron" },
+  "owner": { "name": "Lucas-Servi" },
   "plugins": [
-    { "name": "anthill", "source": "./", "description": "An ASCII ant colony crawls your file tree: one ant per agent" }
-  ]
+    { "name": "anthill", "source": "./", "description": "An ASCII ant colony crawls your file tree: one ant per agent, working on the files they touch" }
+  ],
+  "description": "Anthill: an ASCII ant colony that visualizes a Claude Code session's agents, files and context usage."
 }

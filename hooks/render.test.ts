@@ -133,6 +133,25 @@ test('legend lists each ant', () => {
   expect(all.includes('worker (opus)')).toBe(true)
 })
 
+test('legendLines appends the context readout, dim, after every ant\'s own item', () => {
+  const ants: Ant[] = [ant({ id: 'a1', label: 'main', breed: 'haiku' })]
+  const withExtra = legendLines(ants, 80, 0, '63% to compact')
+  expect(lineText(withExtra.at(-1)!)).toContain('63% to compact')
+  const extraSeg = withExtra.at(-1)!.find(s => s.text === '63% to compact')!
+  expect(extraSeg.dim).toBe(true)
+  expect(extraSeg.color).toBeUndefined()
+  // opt-in only: omitting it changes nothing
+  expect(lineText(legendLines(ants, 80, 0).at(-1)!)).not.toContain('to compact')
+})
+
+test('compose shows the context readout in the legend when given, omits it when not', () => {
+  const ants: Ant[] = [ant({ id: 'main', label: 'main', breed: 'opus', task: 'working', at: 0 })]
+  const withPercent = compose(TREE, ants, [], { width: 80, height: 20, tick: 0, contextPercent: 63 })
+  expect(withPercent.some(l => lineText(l).includes('63% to compact'))).toBe(true)
+  const without = compose(TREE, ants, [], { width: 80, height: 20, tick: 0 })
+  expect(without.some(l => lineText(l).includes('to compact'))).toBe(false)
+})
+
 test('MOUND is a small block', () => {
   expect(MOUND.length >= 4 && MOUND.length <= 7).toBe(true)
   for (const l of MOUND) expect(Array.from(l).length <= 24).toBe(true)
@@ -960,6 +979,27 @@ test('an ant with a mishap peeking from the hole blinks the same way as on the t
   expect(colorAt(1)).toBe(MISHAP_COLORS.error)
 })
 
+test('quiet mode drops the blink on the trail: a mishap still shows, it just stops flickering', () => {
+  const k = 1
+  const own = '#111111'
+  const colorAt = (frame: number): string | undefined => {
+    const a = ant({ id: 'm', breed: 'opus', task: 'walking', at: k - TRAIL_STEPS, color: own, frame, mishap: { kind: 'denied', ticks: 5 } })
+    const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0, quiet: true })
+    return cells(lines[TRAIL[k]!.line]).find(c => c.color === own || c.color === MISHAP_COLORS.denied)?.color
+  }
+  expect(colorAt(0)).toBe(own)
+  expect(colorAt(1)).toBe(own)
+  expect(colorAt(3)).toBe(own)
+})
+
+test('quiet mode drops the blink peeking from the hole too', () => {
+  const own = '#5f87ff'
+  const a = ant({ id: 'm', color: own, frame: 1, mishap: { kind: 'error', ticks: 5 } })
+  const lines = compose(TREE, [a], [], { width: 40, height: 20, tick: 0, quiet: true })
+  const slot = PEEKS[0]!
+  expect(cells(lines[slot.line])[slot.col]?.color).toBe(own)
+})
+
 test('a walking ant with a mishap trails a marker right after its glyph on a tree row', () => {
   const rows: Row[] = [row({ name: 'util.ts', path: 'util.ts' })]
   const a = ant({ id: 'a1', task: 'walking', at: 0, frame: 0, mishap: { kind: 'error', ticks: 5 } })
@@ -976,6 +1016,17 @@ test('a working ant with a mishap trails a marker right after its glyph on a tre
   const treeLine = lines.find(l => lineText(l).includes('main.ts'))!
   const glyph = antGlyph('sonnet', 'working', 0)
   expect(lineText(treeLine).includes(glyph + MISHAP_MARK.denied)).toBe(true)
+})
+
+test('quiet mode drops the blink on a tree row too: a standing ant with a mishap stays its own color', () => {
+  const own = '#222222'
+  const rows: Row[] = [row({ name: 'main.ts', path: 'main.ts' })]
+  const a = ant({ id: 'a1', task: 'working', at: 0, color: own, frame: 1, mishap: { kind: 'denied', ticks: 5 } })
+  const full = compose(rows, [a], [], { width: 60, height: 20, tick: 0 })
+  const quiet = compose(rows, [a], [], { width: 60, height: 20, tick: 0, quiet: true })
+  const glyphColor = (lines: Line[]) => lines.flatMap(l => l).find(s => s.text.includes(antGlyph('sonnet', 'working', 1)))?.color
+  expect(glyphColor(full)).toBe(MISHAP_COLORS.denied) // frame 1 is odd: blinking without quiet
+  expect(glyphColor(quiet)).toBe(own)
 })
 
 test('a row with a flash draws its name bold in the flash\'s color, with a trailing marker', () => {
