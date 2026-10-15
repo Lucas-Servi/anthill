@@ -2,6 +2,12 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.8.1]
+
+- Clicks now have a 3-second cooldown: once a click on an ant or the mound
+  lands, any further click within 3 seconds is ignored, so a burst can't
+  stack toasts or pile up flinches.
+
 ## [0.8.0]
 
 - Added click interaction: clicking an ant gives it a brief, cheerful

@@ -55,6 +55,10 @@ const IDLE_WIGGLE_EVERY = 4
 const RECONCILE_EVERY = 25
 // How many rows the strip above the prompt may use at most, mound+tree+button together.
 const STRIP_MAX_ROWS = 6
+// How long after a click lands (on an ant or the mound alike) further clicks are ignored,
+// so a burst of them can't stack toasts or pile up flinches. Wall-clock, not ticks: the
+// simulation tick stands still while the colony is idle, but a click's cooldown shouldn't.
+const CLICK_COOLDOWN_MS = 3000
 
 const rowsAtom = atom({ plugin: 'anthill', key: 'rows' } as const, [] as Row[])
 const antsAtom = atom({ plugin: 'anthill', key: 'ants' } as const, [] as Ant[])
@@ -94,6 +98,8 @@ let growthThreshold = Infinity
  */
 let compactRate: number | undefined
 const COMPACT_RATE_KEY = 'compactMsPerToken'
+/** When the last click that did something landed ($.clock.now()), for CLICK_COOLDOWN_MS. */
+let lastClickAt: number | undefined
 
 const publish = async ($: EngineInterface) => {
   ants = seatOrbits(seatPeeks(ants))
@@ -316,6 +322,7 @@ export const register: Register = (on, options) => {
       typeof d === 'number' ? [{ i: d, at: tick }] : d && typeof d === 'object' ? [d as Dug] : [],
     )
     poke = await read($, pokeAtom)
+    lastClickAt = undefined
     growth = await read($, growthAtom)
     contextPercent = await read($, contextPercentAtom)
     // $.store, not just $.state, since this is the one thing meant to outlive the
@@ -608,14 +615,20 @@ export const register: Register = (on, options) => {
   on('ui.message', async ($, e, next) => {
     if (e.component !== 'Pane' || !isClickMessage(e.data)) return next(e)
     const { hit, x, y } = e.data
+    // Still cooling down from the last click: heard, and ignored. A clock that can't be
+    // read just goes ungated rather than swallowing every click.
+    const at = await now($)
+    if (at !== undefined && lastClickAt !== undefined && at - lastClickAt < CLICK_COOLDOWN_MS) return {}
     if (hit.kind === 'ant') {
       const ant = ants.find(a => a.id === hit.id)
       if (ant) {
+        lastClickAt = at
         setAnt({ ...ant, notice: { ticks: motion === 'quiet' ? QUIET_NOTICE_TICKS : NOTICE_TICKS } })
         $.ui.toast(`${ant.label} (${ant.breed}): ${describeAnt(ant)}`)
         await publish($)
       }
     } else {
+      lastClickAt = at
       poke = addPoke(poke, y, x, motion === 'quiet' ? QUIET_POKE_TICKS : POKE_TICKS)
       await publish($)
     }

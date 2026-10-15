@@ -848,6 +848,30 @@ test('clicking a plain mound cell (posted as mound-client.tsx would) flinches it
   expect(latest.poke).toEqual([])
 })
 
+test('clicks within 3s of one that landed are ignored, ant or mound alike; one after the cooldown lands again', async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
+  const { clock, latest, pane } = await session($, on, DIRS, [])
+
+  await pane.post({ hit: { kind: 'ant', id: 'main' }, x: 9, y: 1 }, { in: 'mound' })
+  expect(toasts).toHaveLength(1)
+
+  // a second click on the ant, and one on the mound, both inside the cooldown
+  await clock.advance(1000)
+  await pane.post({ hit: { kind: 'ant', id: 'main' }, x: 9, y: 1 }, { in: 'mound' })
+  await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 }, { in: 'mound' })
+  expect(toasts).toHaveLength(1)
+  expect(latest.poke).toEqual([])
+
+  // past 3s since the click that landed: the next one lands
+  await clock.advance(2100)
+  await pane.post({ hit: { kind: 'mound' }, x: 6, y: 3 }, { in: 'mound' })
+  expect(latest.poke).toEqual([{ line: 3, col: 6, ticks: expect.any(Number) }])
+})
+
 test('a real pointer click on the mound Client does the same thing end to end, not just a posted message', async ($, on) => {
   const { latest, pane } = await session($, on, DIRS, [])
 
