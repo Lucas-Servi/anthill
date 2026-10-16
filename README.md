@@ -85,6 +85,44 @@ and that choice is saved too (the same way the strip/side layout choice is),
 so it's what the next session starts in, taking priority over `/config`'s
 own setting from then on.
 
+## Try it
+
+With the pane open (`/anthill`), ask Claude for something and watch the colony:
+
+1. **"Read README.md and fix any typos you find."** The main ant climbs out of the
+   hole, walks down the trail to `README.md` and works on it, then heads home.
+2. **"Use three subagents to summarize each top-level folder in parallel."** A new
+   ant appears for each subagent, in its own color and with a body for its model,
+   and walks to the folders it reads. Each leaves the colony when its subagent ends.
+3. **"Run the tests."** Work with no file to point to shows as a dot digging
+   tunnels through the mound. Deny a call at the permission prompt and its ant
+   stumbles, and the file it named, if any, flashes.
+4. **Type `/compact`.** The ants refactor the anthill while the conversation is
+   compacted, and the mound, grown with the context, goes back to its first shape.
+5. **In a fullscreen terminal, click an ant** to see what it's doing, or poke the
+   mound. Poke it more than ten times in a minute and the colony dances.
+
+## Troubleshooting
+
+- **The pane doesn't open by itself.** Claude Code places a pane it wasn't asked
+  for only from 144 terminal columns. Type `/anthill` to open it at any width.
+- **An update changed nothing.** An installed copy updates only when the
+  version changes. Run `/plugin marketplace update anthill`, then
+  `/plugin update anthill@anthill`, then `/reload-plugins`.
+- **Clicks do nothing.** Clicking works only in the fullscreen layout with the
+  pane docked, the one place a terminal reports clicks.
+- **It's too lively, or you want it gone for a while.** `/anthill quiet` calms
+  it, `/anthill off` turns it off, and `/anthill full` brings it back.
+- **The pane stopped drawing after a Claude Code update.** Claude Code's plugin
+  API is early access and can change between releases. Update anthill, and if
+  that doesn't help, open an issue (see Support).
+
+## Support
+
+Report a bug or ask a question in [GitHub issues](https://github.com/Lucas-Servi/anthill/issues).
+Report a security concern privately through the repository's
+[Security tab](https://github.com/Lucas-Servi/anthill/security/advisories/new).
+
 ## What it reads, sends and keeps
 
 anthill runs entirely inside your Claude Code session. It makes no network calls,
@@ -96,7 +134,10 @@ plugin: which tool each agent calls, the file or folder path in that call, and
 whether the call succeeded, errored or was denied. It also asks Claude Code which
 model each agent runs on, which subagents are still running, and how full the
 context window is. It lists the folders a path leads through, and checks whether a
-file exists, to draw the tree.
+file exists, to draw the tree. During `/compact` it counts the conversation's
+messages, for the banner's "240 → 12 messages", and if Claude Code can't say how
+full the context is, it measures the conversation's total length to pace the
+animation. It never reads what the messages say, and keeps neither.
 
 **What it writes, all within Claude Code on your machine.** The colony goes in the
 session's own state and is gone when the session is. Three settings go in Claude

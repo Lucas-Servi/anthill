@@ -665,7 +665,10 @@ export const register: Register = (on, options) => {
     // Client (so a click can be hit-tested) exists on terminal and desktop today, not
     // vscode or mobile: there, this falls back to the engine's own default drawing.
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
-    const { Box, Button, Client } = $.ui.resolve(e)
+    // `ui.Client(...)` with its module path written right there, not a `Client` taken out
+    // of the table first: Anthropic's directory reads the path off that one call.
+    const ui = $.ui.resolve(e)
+    const { Box, Button } = ui
     const readAnts = await read($, antsAtom)
     const main = readAnts.find(a => a.id === MAIN)
     const width = Math.max(10, e.props.bodyColumns || 40)
@@ -695,7 +698,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {Client({ key: 'mound', module: './mound-client.tsx', width, height: bodyHeight, props: clientProps })}
+        {ui.Client({ module: './mound-client.tsx', key: 'mound', width, height: bodyHeight, props: clientProps })}
         <Box justifyContent="flex-end">
           <Button
             key="to-strip"

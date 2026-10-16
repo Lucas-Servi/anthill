@@ -2,6 +2,14 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.9.3]
+
+- Nothing changes in what you see. The pane's drawing module is named in
+  the one form Anthropic's directory can read, and the README gains Try it,
+  Troubleshooting and Support sections, as the directory's policy asks.
+  Security reports can now be sent privately from the repository's
+  Security tab.
+
 ## [0.9.2]
 
 - Nothing changes in what you see. The tests move to `tests/`, the pane's
