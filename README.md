@@ -43,6 +43,18 @@ so:
 
 then restart Claude Code (or start a new session) to pick it up.
 
+To remove it: `/plugin uninstall anthill@anthill`.
+
+## Requirements
+
+- Claude Code 2.1.300 or 2.1.301 (what it's tested on). It's built on Claude Code's
+  plugin hooks API, which is early access and can change between releases: after
+  updating Claude Code, update anthill too.
+- A terminal with 24-bit color.
+- Clicking the ants and the mound needs the fullscreen layout with the pane docked:
+  that's the only place a terminal reports clicks. Everything else works in the
+  inline pane and the strip too.
+
 ## Use
 
 The pane opens by itself when the terminal is at least 144 columns wide. At any
