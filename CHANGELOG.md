@@ -2,6 +2,13 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.9.1]
+
+- An icon, and a display name ("Anthill"), for the plugin's listings. The
+  README now says what the plugin reads and keeps: it makes no network
+  calls, never reads a file's contents, and stores only your layout,
+  Animation setting and compaction pacing on your machine.
+
 ## [0.9.0]
 
 - Poke the mound more than 10 times within a minute and the colony

@@ -85,6 +85,20 @@ and that choice is saved too (the same way the strip/side layout choice is),
 so it's what the next session starts in, taking priority over `/config`'s
 own setting from then on.
 
+## What it reads, and what it keeps
+
+anthill runs entirely inside your Claude Code session and makes no network calls.
+It never sends anything anywhere and runs no commands.
+To draw the colony, it reads the events Claude Code hands every plugin: which tool
+each agent calls, the file or folder path in that call, and whether the call
+succeeded, errored or was denied. It also reads which model each agent runs on, which
+subagents are still running, and how full the context window is. It lists the folders those paths lead through, and
+checks whether a file exists, to draw the tree; it never reads a file's contents.
+It keeps three things in Claude Code's own plugin storage on your machine: your
+pane/strip layout, your Animation setting, and how long compactions take, so the
+next one's animation is paced right. The colony itself lives in the session's
+state and goes when the session does.
+
 ## Develop
 
 ```
@@ -116,10 +130,10 @@ A small scratch script, `scripts/demo.ts`, renders a representative scene
 `/compact` refactor mid-animation) straight to a real ANSI terminal, using
 only `hooks/render.ts`/`hooks/mound.ts`'s own pure functions — handy for
 checking a change by eye. Run it with
-`npx -y esbuild scripts/demo.ts --bundle --outfile=/tmp/anthill-demo.js --format=esm --platform=node && node /tmp/anthill-demo.js`.
-`scripts/video.ts` and `scripts/screenshot.ts` draw the demo above (`docs/demo.gif`) and a
-still of it (`docs/screenshot.png`) the same way, as HTML pages to capture in a browser; their
-header comments say how.
+`npx -y esbuild@0.28.2 scripts/demo.ts --bundle --outfile=/tmp/anthill-demo.js --format=esm --platform=node && node /tmp/anthill-demo.js`.
+`scripts/video.ts` and `scripts/screenshot.ts` draw the demo above, and a still of it, the
+same way, as HTML pages to capture in a browser; `scripts/icon.ts` draws the plugin's icon.
+Their header comments say how.
 
 ## License
 

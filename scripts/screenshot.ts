@@ -4,7 +4,7 @@
  * own compose() — so the picture is exactly what the pane shows, only in a browser,
  * where it can be captured as an image. Prints the page to stdout:
  *
- *   npx -y esbuild scripts/screenshot.ts --bundle --outfile=/tmp/anthill-shot.js --format=esm --platform=node
+ *   npx -y esbuild@0.28.2 scripts/screenshot.ts --bundle --outfile=/tmp/anthill-shot.js --format=esm --platform=node
  *   mkdir -p /tmp/anthill-shot && node /tmp/anthill-shot.js > /tmp/anthill-shot/index.html
  *
  * then open that file in a browser sized to the `.stage` element (it's drawn at 2x) and screenshot it.

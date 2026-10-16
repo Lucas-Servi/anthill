@@ -1,6 +1,7 @@
 {
   "name": "anthill",
-  "version": "0.9.0",
+  "displayName": "Anthill",
+  "version": "0.9.1",
   "description": "An ASCII ant colony crawls your file tree: one ant per agent, working on the files they touch",
   "types": "./types/index.d.ts",
   "author": { "name": "Lucas Servi" },
@@ -8,6 +9,9 @@
   "homepage": "https://github.com/Lucas-Servi/anthill",
   "repository": "https://github.com/Lucas-Servi/anthill",
   "keywords": ["ascii", "visualization", "ants", "file-tree", "animation"],
+  "icon": "./icon.png",
+  "documentationUrl": "https://github.com/Lucas-Servi/anthill#readme",
+  "supportUrl": "https://github.com/Lucas-Servi/anthill/issues",
   "userConfig": {
     "motion": {
       "type": "string",

@@ -5,17 +5,17 @@
  * so the ants really walk the trail, dig, stumble and dance; the page then shows one frame
  * every TICK_MS, the pane's own pace, with a caption saying what's going on. Prints the page:
  *
- *   npx -y esbuild scripts/video.ts --bundle --outfile=/tmp/anthill-video.js --format=esm --platform=node
+ *   npx -y esbuild@0.28.2 scripts/video.ts --bundle --outfile=/tmp/anthill-video.js --format=esm --platform=node
  *   mkdir -p /tmp/anthill-video && node /tmp/anthill-video.js > /tmp/anthill-video/index.html
  *
  * then open it in a browser sized to the `.stage` element and screen-record it. It loops;
  * in the page, `restart()` starts it over, `pause()` stops it and `seek(n)` shows frame n.
  *
- * docs/demo.gif was made frame by frame instead: headless Chrome (puppeteer-core) at a
+ * The README's demo GIF was made frame by frame instead: headless Chrome (puppeteer-core) at a
  * 1000x1124 viewport, `seek(n)` and a screenshot per frame, then ffmpeg (ffmpeg-static) at
  * 25/3 fps, one frame per tick:
  *   ffmpeg -framerate 25/3 -i f%03d.png -vf "scale=640:-1:flags=lanczos,split[a][b];
- *     [a]palettegen=stats_mode=diff:max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" demo.gif
+ *     [a]palettegen=stats_mode=diff:max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" out.gif
  * (for an .mp4: -vf "fps=25,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart)
  */
 import type { Ant, Dug, Poke, Row } from '../types'
