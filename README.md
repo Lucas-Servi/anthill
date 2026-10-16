@@ -4,7 +4,7 @@ A Claude Code plugin that docks an ASCII ant colony beside your session.
 Your project's file tree grows out of the anthill, and every agent is an ant
 crawling its branches:
 
-![anthill: an ASCII ant colony docked beside a Claude Code session, at work and dancing](docs/screenshot.png)
+![anthill: an ASCII ant colony docked beside a Claude Code session: ants walking to files, digging, stumbling on a denied call, and dancing](docs/demo.gif)
 
 - **Read / Edit / Grep / Glob**: the ant walks to that file or directory and works on it.
 - **Write to a new file**: the ant walks there and builds the new branch, piece by piece.
@@ -29,6 +29,9 @@ Each agent gets its own **color**. Each model gets its own **body**:
 ```
 /plugin install anthill --marketplace Lucas-Servi/anthill
 ```
+
+It may say one option isn't set yet: that's the Animation setting (see Configure),
+which already defaults to `full`, so there's nothing to do.
 
 Already installed and want the latest version? `claude plugin update` only
 installs a newer version if `plugin.json`'s `version` field actually changed,
@@ -114,8 +117,9 @@ A small scratch script, `scripts/demo.ts`, renders a representative scene
 only `hooks/render.ts`/`hooks/mound.ts`'s own pure functions — handy for
 checking a change by eye. Run it with
 `npx -y esbuild scripts/demo.ts --bundle --outfile=/tmp/anthill-demo.js --format=esm --platform=node && node /tmp/anthill-demo.js`.
-`scripts/screenshot.ts` draws the screenshot above the same way, as an HTML page to capture
-in a browser (its header comment says how).
+`scripts/video.ts` and `scripts/screenshot.ts` draw the demo above (`docs/demo.gif`) and a
+still of it (`docs/screenshot.png`) the same way, as HTML pages to capture in a browser; their
+header comments say how.
 
 ## License
 
