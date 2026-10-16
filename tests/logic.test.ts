@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Ant, Row } from '../types'
-import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, branchPrefixSteps, isBuilt, relativize, BUILD_STEPS } from './tree'
+import { IGNORED, childRows, indexOf, openDir, insertRow, parentOf, ancestors, branchPrefixes, branchPrefixSteps, isBuilt, relativize, BUILD_STEPS } from '../hooks/tree'
 import {
   breedOf,
   newAnt,
@@ -31,8 +31,8 @@ import {
   DANCE_CLICKS,
   DANCE_WINDOW_MS,
   DANCE_COOLDOWN_MS,
-} from './ants'
-import { SUMMIT, TRAIL, TUNNEL, TUNNEL_SEATS, GROWTH, H_GROWTH, GROWTH_STAGES, stageFor } from './mound'
+} from '../hooks/ants'
+import { SUMMIT, TRAIL, TUNNEL, TUNNEL_SEATS, GROWTH, H_GROWTH, GROWTH_STAGES, stageFor } from '../hooks/mound'
 
 /** Runs one tick on a single ant, unwrapping the (always non-empty) result. */
 function tick(ant: Ant, rows: Row[]): [Ant, Row[]] {

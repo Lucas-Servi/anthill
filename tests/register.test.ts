@@ -1,7 +1,7 @@
 import { mock, expect, test, type TestBody } from 'claude-code/testing'
-import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from './mound'
-import { DANCE_CLICKS, DANCE_TICKS, MISHAP_TICKS, NOTICE_TICKS, POKE_TICKS, STALE_TICKS } from './ants'
-import { SETTLE_TICKS, compactMs } from './render'
+import { GROWTH, GROWTH_STAGES, HOME, TUNNEL, stageFor } from '../hooks/mound'
+import { DANCE_CLICKS, DANCE_TICKS, MISHAP_TICKS, NOTICE_TICKS, POKE_TICKS, STALE_TICKS } from '../hooks/ants'
+import { SETTLE_TICKS, compactMs } from '../hooks/render'
 
 /** A number rounded to 6 places, for comparing computed fractions. */
 const approx = (n: unknown): number => Math.round((n as number) * 1e6) / 1e6

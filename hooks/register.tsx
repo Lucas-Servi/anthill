@@ -695,7 +695,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        <Client key="mound" module="./mound-client.tsx" width={width} height={bodyHeight} props={clientProps} />
+        {Client({ key: 'mound', module: './mound-client.tsx', width, height: bodyHeight, props: clientProps })}
         <Box justifyContent="flex-end">
           <Button
             key="to-strip"

@@ -2,6 +2,14 @@
 
 All notable changes to anthill are recorded here, newest first.
 
+## [0.9.2]
+
+- Nothing changes in what you see. The tests move to `tests/`, the pane's
+  drawing module is named in the plain form Anthropic's directory reads,
+  and the README's demo images move off the installed plugin (it's about
+  1.2 MB smaller). The README now lists, hook by hook, what anthill does
+  with the events it sees.
+
 ## [0.9.1]
 
 - An icon, and a display name ("Anthill"), for the plugin's listings. The

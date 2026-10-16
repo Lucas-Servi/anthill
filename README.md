@@ -136,9 +136,9 @@ unchanged and hands back Claude Code's own result unchanged: anthill only watche
   the prompt while that layout is on. Otherwise the strip is left as Claude Code
   draws it.
 
-The `scripts/` folder and the `*.test.ts` files don't run as part of the plugin:
-the scripts are development tools that draw the README's images, and the tests
-run only under `claude plugin test`.
+The `scripts/` and `tests/` folders don't run as part of the plugin: the scripts
+are development tools that draw the README's images, and the tests run only under
+`claude plugin test`.
 
 ## Develop
 
@@ -161,7 +161,8 @@ window; `hooks/render.ts` draws the ASCII picture, in either the tall or the
 short-and-wide layout, and hit-tests a click against it. `hooks/mound-client.tsx`
 is a `Client` surface module: it draws the pane's own body (so a click over it
 can be reported at all) and posts a hit back to `register.tsx`'s `ui.message`
-hook, which decides what it means. The state contract lives in `types/index.d.ts`.
+hook, which decides what it means. The state contract lives in `types/index.d.ts`,
+and the tests in `tests/`.
 
 Bumping `plugin.json`'s `version` is how an installed copy actually picks up
 a change — `claude plugin update` compares versions, not commits.

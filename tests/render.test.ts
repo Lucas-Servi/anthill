@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Row, Ant, Breed, Fold } from '../types'
-import { assign, markBusy, seatOrbits, seatPeeks } from './ants'
-import { foldTree, foldProgress, compactMs, learnRate, COMPACT_BASE_MS, COMPACT_MS_PER_TOKEN, SETTLE_TICKS, MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, hitAt, lineText, type Line } from './render'
+import { assign, markBusy, seatOrbits, seatPeeks } from '../hooks/ants'
+import { foldTree, foldProgress, compactMs, learnRate, COMPACT_BASE_MS, COMPACT_MS_PER_TOKEN, SETTLE_TICKS, MOUND, MISHAP_COLORS, MISHAP_MARK, PEEK, antGlyph, dugSprite, legendLines, workFx, compose, hitAt, lineText, type Line } from '../hooks/render'
 import {
   GROWTH,
   GROWTH_STAGES,
@@ -30,7 +30,7 @@ import {
   glyphStart,
   stageOf,
   type MoundShape,
-} from './mound'
+} from '../hooks/mound'
 
 /** A number rounded to 6 places, for comparing computed fractions. */
 const approx = (n: unknown): number => Math.round((n as number) * 1e6) / 1e6
