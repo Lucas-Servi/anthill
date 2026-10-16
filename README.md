@@ -4,7 +4,7 @@ A Claude Code plugin that docks an ASCII ant colony beside your session.
 Your project's file tree grows out of the anthill, and every agent is an ant
 crawling its branches:
 
-![anthill: an ASCII ant colony docked beside a Claude Code session: ants walking to files, digging, stumbling on a denied call, and dancing](docs/demo.gif)
+![anthill: an ASCII ant colony docked beside a Claude Code session: ants walking to files, digging, stumbling on a denied call, and dancing](https://raw.githubusercontent.com/Lucas-Servi/anthill/assets/demo.gif)
 
 - **Read / Edit / Grep / Glob**: the ant walks to that file or directory and works on it.
 - **Write to a new file**: the ant walks there and builds the new branch, piece by piece.
@@ -85,19 +85,60 @@ and that choice is saved too (the same way the strip/side layout choice is),
 so it's what the next session starts in, taking priority over `/config`'s
 own setting from then on.
 
-## What it reads, and what it keeps
+## What it reads, sends and keeps
 
-anthill runs entirely inside your Claude Code session and makes no network calls.
-It never sends anything anywhere and runs no commands.
-To draw the colony, it reads the events Claude Code hands every plugin: which tool
-each agent calls, the file or folder path in that call, and whether the call
-succeeded, errored or was denied. It also reads which model each agent runs on, which
-subagents are still running, and how full the context window is. It lists the folders those paths lead through, and
-checks whether a file exists, to draw the tree; it never reads a file's contents.
-It keeps three things in Claude Code's own plugin storage on your machine: your
-pane/strip layout, your Animation setting, and how long compactions take, so the
-next one's animation is paced right. The colony itself lives in the session's
-state and goes when the session does.
+anthill runs entirely inside your Claude Code session. It makes no network calls,
+runs no tools, shell commands or processes, starts no agents, and never reads a
+file's contents. Nothing it sees leaves your machine.
+
+**What it reads.** To draw the colony, it reads the events Claude Code hands every
+plugin: which tool each agent calls, the file or folder path in that call, and
+whether the call succeeded, errored or was denied. It also asks Claude Code which
+model each agent runs on, which subagents are still running, and how full the
+context window is. It lists the folders a path leads through, and checks whether a
+file exists, to draw the tree.
+
+**What it writes, all within Claude Code on your machine.** The colony goes in the
+session's own state and is gone when the session is. Three settings go in Claude
+Code's plugin storage: your pane/strip layout, your Animation setting, and how long
+compactions take, so the next one's animation is paced right. It shows a short
+toast when you click an ant, and when the colony dances. Its pane is drawn by its
+own module (`hooks/mound-client.tsx`), which posts where you clicked to anthill's
+own hooks; Claude Code delivers a pane's posts only to the plugin that drew it.
+
+### Hook by hook
+
+Apart from anthill's own `/anthill` command, every hook passes its event on
+unchanged and hands back Claude Code's own result unchanged: anthill only watches.
+
+- **`session.start`**: once Claude Code has started the session, loads the colony
+  and the three settings, lists the project's top folder, registers `/anthill`,
+  opens the pane (unless Animation is off), and starts a 120 ms timer that
+  animates the colony.
+- **`tool.call`**: sees every tool call any agent makes, to move that agent's ant.
+  For a call that names a file or folder (Read, Edit, Write and the like), it lists
+  the folders on that path and checks whether the file exists, to draw it in the
+  tree. It never blocks, changes or answers a call.
+- **`agent.spawn`**: notices a subagent starting, to give it an ant. It gives the
+  agent nothing and changes nothing about it.
+- **`turn.step`** and **`turn.complete`**: mark an agent's ant busy, or back home;
+  the turn's stream passes through untouched.
+- **`session.compact`**: plays the compaction animation, and times how long the
+  compaction takes.
+- **`session.measure`** and **`session.end`**: grow the mound as the context fills,
+  and reset it after `/clear`.
+- **`command.run`**: answers only `/anthill`, anthill's own command, which switches
+  the layout or the animation and opens or closes the pane. Every other command
+  passes by untouched.
+- **`ui.message`**: receives the click positions anthill's own pane module posts,
+  and nothing else.
+- **`ui.render`** (`Pane`, `AbovePrompt`): draws anthill's pane, and the strip above
+  the prompt while that layout is on. Otherwise the strip is left as Claude Code
+  draws it.
+
+The `scripts/` folder and the `*.test.ts` files don't run as part of the plugin:
+the scripts are development tools that draw the README's images, and the tests
+run only under `claude plugin test`.
 
 ## Develop
 
